@@ -21,6 +21,7 @@ export class WhatsAppWorker {
   private client: Client;
   private scraper: VeloxScraper;
   private inviteRegex: RegExp;
+  private isActive: boolean = true;
 
   constructor(
     private tenantId: string,
@@ -60,13 +61,20 @@ export class WhatsAppWorker {
     this.setupListeners();
   }
 
+  public setIsActive(active: boolean): void {
+    const previous = this.isActive;
+    this.isActive = active;
+    if (previous !== active) {
+      console.log(`[Worker] Estado da automação alterado para tenant ${this.tenantId}: ${active ? 'LIGADO' : 'PAUSADO'}`);
+    }
+  }
+
   private setupListeners(): void {
     // Evento de geração do QR Code
     this.client.on('qr', async (qrText: string) => {
       console.log(`[Worker] Novo QR Code gerado para tenant ${this.tenantId}`);
 
       try {
-        // Converte o texto do QR Code para Data URL Base64 renderizável no frontend
         const qrDataUrl = await QRCode.toDataURL(qrText);
 
         await updateSessionStatus(
@@ -81,7 +89,7 @@ export class WhatsAppWorker {
           tenant_id: this.tenantId,
           level: 'INFO',
           event_type: 'QR_GENERATED',
-          message: 'Novo QR Code gerado e disponibilizado para leitura.',
+          message: 'Novo Código de Conexão gerado.',
         });
       } catch (err: any) {
         console.error('[Worker] Erro ao converter QR Code:', err.message);
@@ -96,7 +104,7 @@ export class WhatsAppWorker {
         this.supabase,
         this.sessionId,
         'CONNECTED',
-        null, // Limpa o QR Code quando conectado
+        null,
         'vps-worker-01'
       );
 
@@ -104,7 +112,7 @@ export class WhatsAppWorker {
         tenant_id: this.tenantId,
         level: 'INFO',
         event_type: 'SESSION_READY',
-        message: 'WhatsApp Web conectado e pronto para escuta em tempo real.',
+        message: 'WhatsApp Web conectado e pronto para automação.',
       });
     });
 
@@ -124,7 +132,7 @@ export class WhatsAppWorker {
         tenant_id: this.tenantId,
         level: 'WARN',
         event_type: 'RECONNECT',
-        message: `Conexão perdida (${reason}). Tentando reconectar...`,
+        message: `Conexão encerrada (${reason}). Tentando reconectar...`,
       });
     });
 
@@ -135,13 +143,25 @@ export class WhatsAppWorker {
       const match = msg.body.match(this.inviteRegex);
       if (match) {
         const targetUrl = match[0];
-        console.log(`[Worker] URL de convite capturada no WhatsApp: ${targetUrl}`);
+        console.log(`[Worker] Convite capturado no WhatsApp: ${targetUrl}`);
 
-        // Dispara o processamento imediato em background
+        // Verificação da chave LIGADO / DESLIGADO (ON / OFF)
+        if (!this.isActive) {
+          console.log(`[Worker] Automação pausada pelo prestador. Ignorando convite: ${targetUrl}`);
+          await recordSystemLog(this.supabase, {
+            tenant_id: this.tenantId,
+            level: 'WARN',
+            event_type: 'AUTOMATION_PAUSED',
+            message: 'Convite recebido mas ignorado pois a automação está pausada pelo prestador.',
+            details: { url: targetUrl },
+          });
+          return;
+        }
+
+        // Dispara o processamento imediato em background se LIGADO
         setImmediate(async () => {
           const result = await this.scraper.processarConvite(targetUrl);
 
-          // Registra a chamada capturada no banco do Supabase
           await recordCapturedCall(this.supabase, {
             tenant_id: this.tenantId,
             url: result.url,
@@ -159,7 +179,7 @@ export class WhatsAppWorker {
             event_type: result.success ? 'HTTP_POST_SUCCESS' : 'HTTP_POST_ERROR',
             message: result.success
               ? `Convite aceito com sucesso em ${result.durationMs}ms.`
-              : `Falha ao aceitar convite: ${result.errorMessage}`,
+              : `Tentativa de aceite: ${result.errorMessage}`,
             details: { url: targetUrl, durationMs: result.durationMs },
           });
         });

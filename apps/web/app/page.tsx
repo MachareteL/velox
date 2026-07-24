@@ -10,13 +10,14 @@ import { MetricsCards } from '../components/MetricsCards';
 import { CallsFeed } from '../components/CallsFeed';
 import { SystemLogViewer } from '../components/SystemLogViewer';
 import { QRModal } from '../components/QRModal';
-import { Activity } from 'lucide-react';
+import { Activity, AlertTriangle, PauseCircle } from 'lucide-react';
 
 export default function DashboardPage() {
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
 
   const [sessionStatus, setSessionStatus] = useState<WhatsAppSessionStatus>('DISCONNECTED');
+  const [isActive, setIsActive] = useState<boolean>(true);
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [isQRModalOpen, setIsQRModalOpen] = useState(false);
 
@@ -33,9 +34,7 @@ export default function DashboardPage() {
     if (!user) return;
     const tenantId = user.id;
 
-    console.log(`[Dashboard] Carregando dados para o prestador [tenant_id: ${tenantId}]`);
-
-    // 1. Carrega o estado inicial da sessão do WhatsApp
+    // 1. Carrega a sessão inicial do prestador
     const fetchInitialSession = async () => {
       const { data, error } = await supabase
         .from('whatsapp_sessions')
@@ -43,32 +42,26 @@ export default function DashboardPage() {
         .eq('tenant_id', tenantId)
         .maybeSingle();
 
-      if (error) {
-        console.error('[Dashboard] Erro ao buscar whatsapp_sessions:', error);
-      }
-
       if (data) {
-        console.log('[Dashboard] Sessão inicial carregada:', data);
         setSessionStatus(data.status as WhatsAppSessionStatus);
+        setIsActive(data.is_active !== false);
         setQrCode(data.qr_code);
         if (data.status === 'DISCONNECTED_NEED_QR') {
           setIsQRModalOpen(true);
         }
       } else {
-        console.log('[Dashboard] Nenhuma sessão encontrada. Criando sessão padrão...');
-        const { data: newSession, error: createErr } = await supabase
+        const { data: newSession } = await supabase
           .from('whatsapp_sessions')
           .upsert(
-            { tenant_id: tenantId, status: 'DISCONNECTED' },
+            { tenant_id: tenantId, status: 'DISCONNECTED', is_active: true },
             { onConflict: 'tenant_id' }
           )
           .select('*')
           .single();
 
-        if (createErr) {
-          console.error('[Dashboard] Erro ao criar sessão inicial:', createErr);
-        } else if (newSession) {
+        if (newSession) {
           setSessionStatus(newSession.status as WhatsAppSessionStatus);
+          setIsActive(newSession.is_active !== false);
         }
       }
     };
@@ -114,9 +107,9 @@ export default function DashboardPage() {
         },
         (payload: any) => {
           const updated = payload.new as WhatsAppSession;
-          console.log('[Dashboard Realtime] Recebida atualização da sessão:', updated);
           if (updated) {
             setSessionStatus(updated.status);
+            setIsActive(updated.is_active !== false);
             setQrCode(updated.qr_code || null);
 
             if (updated.status === 'DISCONNECTED_NEED_QR') {
@@ -135,7 +128,6 @@ export default function DashboardPage() {
         },
         (payload: any) => {
           const newCall = payload.new as CapturedCall;
-          console.log('[Dashboard Realtime] Novo chamado capturado:', newCall);
           setCalls((prev) => [newCall, ...prev]);
         }
       )
@@ -149,18 +141,32 @@ export default function DashboardPage() {
         },
         (payload: any) => {
           const newLog = payload.new as SystemLog;
-          console.log('[Dashboard Realtime] Novo log do sistema:', newLog);
           setLogs((prev) => [newLog, ...prev]);
         }
       )
-      .subscribe((status) => {
-        console.log(`[Dashboard Realtime] Canal inscrito com status: ${status}`);
-      });
+      .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
   }, [user]);
+
+  const handleToggleActive = async () => {
+    if (!user) return;
+    const nextState = !isActive;
+    setIsActive(nextState);
+
+    await supabase
+      .from('whatsapp_sessions')
+      .upsert(
+        {
+          tenant_id: user.id,
+          is_active: nextState,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'tenant_id' }
+      );
+  };
 
   if (authLoading || !user) {
     return (
@@ -175,9 +181,26 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-[#090d16] text-gray-100 pb-12">
-      <Navbar status={sessionStatus} onOpenQR={() => setIsQRModalOpen(true)} />
+      <Navbar
+        status={sessionStatus}
+        isActive={isActive}
+        onToggleActive={handleToggleActive}
+        onOpenQR={() => setIsQRModalOpen(true)}
+      />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
+        {!isActive && (
+          <div className="mb-6 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-300 flex items-center gap-3 shadow-lg">
+            <PauseCircle className="w-6 h-6 text-amber-400 flex-shrink-0 animate-pulse" />
+            <div>
+              <h4 className="text-sm font-bold">Automação Pausada pelo Prestador</h4>
+              <p className="text-xs text-amber-300/80 mt-0.5">
+                O seu sistema não realizará aceites automáticos enquanto estiver pausado. Para voltar a aceitar convites instantaneamente, basta clicar no botão <strong>Aceite Automático: PAUSADO</strong> no topo da tela.
+              </p>
+            </div>
+          </div>
+        )}
+
         <MetricsCards calls={calls} />
         <CallsFeed calls={calls} />
         <SystemLogViewer logs={logs} />

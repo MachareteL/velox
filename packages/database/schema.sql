@@ -1,6 +1,6 @@
 -- ==============================================================================
 -- SCHEMA COMPLETO E DEFINIÇÃO DE SEGURANÇA RLS (SUPABASE / POSTGRESQL)
--- Projeto: Velox WhatsApp SaaS Automator
+-- Projeto: Velox Automator
 -- ==============================================================================
 
 -- 1. TABELAS DO SISTEMA
@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS public.whatsapp_sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE UNIQUE,
     status TEXT NOT NULL DEFAULT 'DISCONNECTED', -- 'DISCONNECTED', 'DISCONNECTED_NEED_QR', 'CONNECTED', 'FAILED'
+    is_active BOOLEAN NOT NULL DEFAULT true, -- TRUE = Aceite Automático LIGADO | FALSE = PAUSADO
     qr_code TEXT,
     worker_id TEXT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -67,8 +68,8 @@ BEGIN
   )
   ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email;
 
-  INSERT INTO public.whatsapp_sessions (id, tenant_id, status)
-  VALUES (NEW.id, NEW.id, 'DISCONNECTED')
+  INSERT INTO public.whatsapp_sessions (id, tenant_id, status, is_active)
+  VALUES (NEW.id, NEW.id, 'DISCONNECTED', true)
   ON CONFLICT (tenant_id) DO NOTHING;
 
   RETURN NEW;

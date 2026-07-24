@@ -15,6 +15,7 @@ export interface WhatsAppSession {
   id: string;
   tenant_id: string;
   status: WhatsAppSessionStatus;
+  is_active: boolean; // true = Automação de Aceites Ativa | false = Pausada pelo Prestador
   qr_code?: string | null;
   worker_id?: string | null;
   updated_at: string;

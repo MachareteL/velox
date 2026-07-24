@@ -57,6 +57,29 @@ export async function updateSessionStatus(
   return data as WhatsAppSession;
 }
 
+export async function toggleAutomationState(
+  supabase: SupabaseClient,
+  tenantId: string,
+  isActive: boolean
+): Promise<WhatsAppSession | null> {
+  const { data, error } = await supabase
+    .from('whatsapp_sessions')
+    .update({
+      is_active: isActive,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('tenant_id', tenantId)
+    .select('*')
+    .maybeSingle();
+
+  if (error) {
+    console.error('Erro ao alterar estado da automação:', error.message);
+    return null;
+  }
+
+  return data as WhatsAppSession;
+}
+
 export async function recordCapturedCall(
   supabase: SupabaseClient,
   callData: Omit<CapturedCall, 'id' | 'created_at'>
