@@ -3,6 +3,7 @@ import type {
   CapturedCall,
   SystemLog,
   SystemLogLevel,
+  Vehicle,
   WhatsAppSession,
   WhatsAppSessionStatus,
 } from '@velox/types';
@@ -78,6 +79,27 @@ export async function toggleAutomationState(
   }
 
   return data as WhatsAppSession;
+}
+
+export async function completeCapturedCall(
+  supabase: SupabaseClient,
+  callId: string
+): Promise<CapturedCall | null> {
+  const { data, error } = await supabase
+    .from('captured_calls')
+    .update({
+      completed_at: new Date().toISOString(),
+    })
+    .eq('id', callId)
+    .select('*')
+    .single();
+
+  if (error) {
+    console.error('Erro ao finalizar chamado:', error.message);
+    return null;
+  }
+
+  return data as CapturedCall;
 }
 
 export async function recordCapturedCall(

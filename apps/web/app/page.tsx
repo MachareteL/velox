@@ -1,16 +1,17 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import type { CapturedCall, SystemLog, WhatsAppSession, WhatsAppSessionStatus } from '@velox/types';
+import type { CapturedCall, SystemLog, Vehicle, WhatsAppSession, WhatsAppSessionStatus } from '@velox/types';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth-context';
 import { Navbar } from '../components/Navbar';
 import { MetricsCards } from '../components/MetricsCards';
+import { FleetManager } from '../components/FleetManager';
 import { CallsFeed } from '../components/CallsFeed';
 import { SystemLogViewer } from '../components/SystemLogViewer';
 import { QRModal } from '../components/QRModal';
-import { Activity, AlertTriangle, PauseCircle } from 'lucide-react';
+import { Activity, PauseCircle } from 'lucide-react';
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -21,6 +22,7 @@ export default function DashboardPage() {
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [isQRModalOpen, setIsQRModalOpen] = useState(false);
 
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [calls, setCalls] = useState<CapturedCall[]>([]);
   const [logs, setLogs] = useState<SystemLog[]>([]);
 
@@ -30,13 +32,48 @@ export default function DashboardPage() {
     }
   }, [user, authLoading, router]);
 
+  const fetchVehicles = useCallback(async () => {
+    if (!user) return;
+    const { data } = await supabase
+      .from('vehicles')
+      .select('*')
+      .eq('tenant_id', user.id)
+      .order('created_at', { ascending: true });
+
+    if (data) setVehicles(data as Vehicle[]);
+  }, [user]);
+
+  const fetchCalls = useCallback(async () => {
+    if (!user) return;
+    const { data } = await supabase
+      .from('captured_calls')
+      .select('*, vehicle:vehicles(*)')
+      .eq('tenant_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    if (data) setCalls(data as CapturedCall[]);
+  }, [user]);
+
+  const fetchLogs = useCallback(async () => {
+    if (!user) return;
+    const { data } = await supabase
+      .from('system_logs')
+      .select('*')
+      .eq('tenant_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    if (data) setLogs(data as SystemLog[]);
+  }, [user]);
+
   useEffect(() => {
     if (!user) return;
     const tenantId = user.id;
 
     // 1. Carrega a sessão inicial do prestador
     const fetchInitialSession = async () => {
-      const { data, error } = await supabase
+      const { data } = await supabase
         .from('whatsapp_sessions')
         .select('*')
         .eq('tenant_id', tenantId)
@@ -66,33 +103,10 @@ export default function DashboardPage() {
       }
     };
 
-    // 2. Carrega lista de chamados capturados
-    const fetchInitialCalls = async () => {
-      const { data } = await supabase
-        .from('captured_calls')
-        .select('*')
-        .eq('tenant_id', tenantId)
-        .order('created_at', { ascending: false })
-        .limit(50);
-
-      if (data) setCalls(data as CapturedCall[]);
-    };
-
-    // 3. Carrega lista de logs do sistema
-    const fetchInitialLogs = async () => {
-      const { data } = await supabase
-        .from('system_logs')
-        .select('*')
-        .eq('tenant_id', tenantId)
-        .order('created_at', { ascending: false })
-        .limit(50);
-
-      if (data) setLogs(data as SystemLog[]);
-    };
-
     fetchInitialSession();
-    fetchInitialCalls();
-    fetchInitialLogs();
+    fetchVehicles();
+    fetchCalls();
+    fetchLogs();
 
     // 4. Inscreve em atualizações em Tempo Real filtradas pelo tenant_id
     const channel = supabase
@@ -121,14 +135,37 @@ export default function DashboardPage() {
       .on(
         'postgres_changes',
         {
+          event: '*',
+          schema: 'public',
+          table: 'vehicles',
+          filter: `tenant_id=eq.${tenantId}`,
+        },
+        () => {
+          fetchVehicles();
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
           event: 'INSERT',
           schema: 'public',
           table: 'captured_calls',
           filter: `tenant_id=eq.${tenantId}`,
         },
-        (payload: any) => {
-          const newCall = payload.new as CapturedCall;
-          setCalls((prev) => [newCall, ...prev]);
+        () => {
+          fetchCalls();
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'captured_calls',
+          filter: `tenant_id=eq.${tenantId}`,
+        },
+        () => {
+          fetchCalls();
         }
       )
       .on(
@@ -149,7 +186,7 @@ export default function DashboardPage() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [user]);
+  }, [user, fetchVehicles, fetchCalls, fetchLogs]);
 
   const handleToggleActive = async () => {
     if (!user) return;
@@ -202,7 +239,8 @@ export default function DashboardPage() {
         )}
 
         <MetricsCards calls={calls} />
-        <CallsFeed calls={calls} />
+        <FleetManager vehicles={vehicles} calls={calls} onRefreshVehicles={fetchVehicles} />
+        <CallsFeed calls={calls} onRefreshCalls={fetchCalls} />
         <SystemLogViewer logs={logs} />
       </main>
 

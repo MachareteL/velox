@@ -4,6 +4,7 @@ import fs from 'fs';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { recordCapturedCall, recordSystemLog, updateSessionStatus } from '@velox/database';
 import { VeloxScraper } from './scraper';
+import { calcularPrevia } from './calculator';
 
 function getWindowsChromePath(): string | null {
   const paths = [
@@ -26,7 +27,7 @@ export class WhatsAppWorker {
   // Controle Anti-Ban / Anti-Spam de Reconexão
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number = 3;
-  private reconnectCooldownWindowMs: number = 10 * 60 * 1000; // 10 minutos
+  private reconnectCooldownWindowMs: number = 10 * 60 * 1000;
   private lastReconnectTime: number = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
 
@@ -106,7 +107,7 @@ export class WhatsAppWorker {
     // Evento de conexão pronta
     this.client.on('ready', async () => {
       console.log(`[Worker] WhatsApp Web conectado para tenant ${this.tenantId}`);
-      this.reconnectAttempts = 0; // Reseta tentativas de reconexão ao conectar com sucesso
+      this.reconnectAttempts = 0;
 
       await updateSessionStatus(
         this.supabase,
@@ -124,13 +125,13 @@ export class WhatsAppWorker {
       });
     });
 
-    // Evento de desconexão (Com Proteção Anti-Spam e Exponential Backoff)
+    // Evento de desconexão
     this.client.on('disconnected', async (reason: string) => {
       console.warn(`[Worker] WhatsApp desconectado (${reason}) para tenant ${this.tenantId}`);
 
       const now = Date.now();
       if (now - this.lastReconnectTime > this.reconnectCooldownWindowMs) {
-        this.reconnectAttempts = 0; // Reseta contador se passou a janela de 10 min
+        this.reconnectAttempts = 0;
       }
       this.lastReconnectTime = now;
 
@@ -142,7 +143,6 @@ export class WhatsAppWorker {
         'vps-worker-01'
       );
 
-      // Se foi LOGOUT explícito do celular ou excedeu o limite seguro de tentativas de reconexão
       if (reason === 'LOGOUT' || this.reconnectAttempts >= this.maxReconnectAttempts) {
         console.warn(`[Worker Anti-Ban] Limite seguro de reconexões atingido (${this.reconnectAttempts}/${this.maxReconnectAttempts}) para tenant ${this.tenantId}. Interrompendo para evitar bloqueios.`);
 
@@ -158,12 +158,11 @@ export class WhatsAppWorker {
           tenant_id: this.tenantId,
           level: 'WARN',
           event_type: 'RECONNECT_COOLDOWN',
-          message: 'Reconexão temporariamente suspensa por segurança para prevenir bloqueios do WhatsApp. Gere um novo QR Code quando desejado.',
+          message: 'Reconexão temporariamente suspensa por segurança para prevenir bloqueios do WhatsApp.',
         });
         return;
       }
 
-      // Cálculo de Exponential Backoff: 1ª tent: 5s, 2ª tent: 15s, 3ª tent: 45s + Jitter aleatório
       this.reconnectAttempts++;
       const backoffDelayMs = Math.min(60000, Math.pow(3, this.reconnectAttempts) * 3000 + Math.floor(Math.random() * 2000));
       console.log(`[Worker Anti-Ban] Agendando reconexão segura #${this.reconnectAttempts} em ${(backoffDelayMs / 1000).toFixed(1)}s...`);
@@ -171,7 +170,6 @@ export class WhatsAppWorker {
       if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
       this.reconnectTimer = setTimeout(async () => {
         try {
-          console.log(`[Worker Anti-Ban] Executando tentativa segura de reconexão para tenant ${this.tenantId}...`);
           await this.client.initialize();
         } catch (err: any) {
           console.error('[Worker Anti-Ban] Erro ao tentar reconectar:', err.message);
@@ -188,7 +186,7 @@ export class WhatsAppWorker {
         const targetUrl = match[0];
         console.log(`[Worker] Convite capturado no WhatsApp: ${targetUrl}`);
 
-        // Verificação da chave LIGADO / DESLIGADO (ON / OFF)
+        // 1. Verificação do botão LIGADO / PAUSADO
         if (!this.isActive) {
           console.log(`[Worker] Automação pausada pelo prestador. Ignorando convite: ${targetUrl}`);
           await recordSystemLog(this.supabase, {
@@ -201,31 +199,80 @@ export class WhatsAppWorker {
           return;
         }
 
-        // Dispara o processamento com Retry Inteligente
-        setImmediate(async () => {
-          const result = await this.scraper.processarConvite(targetUrl);
+        // 2. Verificação de Capacidade de Atendimentos Simultâneos da Frota
+        try {
+          const { data: vehicles } = await this.supabase
+            .from('vehicles')
+            .select('*')
+            .eq('tenant_id', this.tenantId)
+            .eq('is_active', true);
 
-          await recordCapturedCall(this.supabase, {
-            tenant_id: this.tenantId,
-            url: result.url,
-            distancia_km: result.distanciaKm,
-            previa_valor: result.previaValor,
-            duration_ms: result.durationMs,
-            status: result.success ? 'SUCCESS' : 'FAILED',
-            response_payload: result.responsePayload || null,
-            error_message: result.errorMessage || null,
+          const fleetCapacity = vehicles && vehicles.length > 0 ? vehicles.length : 1;
+
+          // Busca chamados em andamento do tenant
+          const { data: calls } = await this.supabase
+            .from('captured_calls')
+            .select('*')
+            .eq('tenant_id', this.tenantId)
+            .eq('status', 'SUCCESS')
+            .is('completed_at', null);
+
+          const now = Date.now();
+          const activeCalls = (calls || []).filter((call) => {
+            const createdAtMs = new Date(call.created_at).getTime();
+            const durationMin = call.previa_minutos || 90;
+            const expiresAtMs = createdAtMs + durationMin * 60 * 1000;
+            return now < expiresAtMs;
           });
 
-          await recordSystemLog(this.supabase, {
-            tenant_id: this.tenantId,
-            level: result.success ? 'INFO' : 'ERROR',
-            event_type: result.success ? 'HTTP_POST_SUCCESS' : 'HTTP_POST_ERROR',
-            message: result.success
-              ? `Convite aceito com sucesso em ${result.durationMs}ms (Tentativas: ${result.attemptsMade}).`
-              : `Tentativa de aceite: ${result.errorMessage}`,
-            details: { url: targetUrl, durationMs: result.durationMs, attemptsMade: result.attemptsMade },
+          if (activeCalls.length >= fleetCapacity) {
+            console.log(`[Worker] Capacidade máxima da frota atingida (${activeCalls.length}/${fleetCapacity} atendimentos ativos). Ignorando convite.`);
+
+            await recordSystemLog(this.supabase, {
+              tenant_id: this.tenantId,
+              level: 'WARN',
+              event_type: 'FLEET_CAPACITY_REACHED',
+              message: `Capacidade da frota atingida (${activeCalls.length}/${fleetCapacity} veículos em atendimento). Convite não aceito automaticamente.`,
+              details: { url: targetUrl, activeCallsCount: activeCalls.length, fleetCapacity },
+            });
+            return;
+          }
+
+          // Vincula o primeiro veículo disponível da frota ativa ao chamado
+          const assignedVehicleIds = new Set(activeCalls.map((c) => c.vehicle_id).filter(Boolean));
+          const availableVehicle = (vehicles || []).find((v) => !assignedVehicleIds.has(v.id)) || null;
+
+          // 3. Processa o convite com Retry Inteligente
+          setImmediate(async () => {
+            const result = await this.scraper.processarConvite(targetUrl);
+            const previaMinutos = calcularPrevia(result.distanciaKm);
+
+            await recordCapturedCall(this.supabase, {
+              tenant_id: this.tenantId,
+              url: result.url,
+              distancia_km: result.distanciaKm,
+              previa_valor: result.previaValor,
+              previa_minutos: previaMinutos,
+              vehicle_id: availableVehicle?.id || null,
+              duration_ms: result.durationMs,
+              status: result.success ? 'SUCCESS' : 'FAILED',
+              response_payload: result.responsePayload || null,
+              error_message: result.errorMessage || null,
+            });
+
+            await recordSystemLog(this.supabase, {
+              tenant_id: this.tenantId,
+              level: result.success ? 'INFO' : 'ERROR',
+              event_type: result.success ? 'HTTP_POST_SUCCESS' : 'HTTP_POST_ERROR',
+              message: result.success
+                ? `Convite aceito com sucesso em ${result.durationMs}ms${availableVehicle ? ` | Veículo: ${availableVehicle.title}` : ''}.`
+                : `Tentativa de aceite: ${result.errorMessage}`,
+              details: { url: targetUrl, durationMs: result.durationMs, vehicleId: availableVehicle?.id },
+            });
           });
-        });
+        } catch (err: any) {
+          console.error('[Worker] Erro ao verificar capacidade da frota:', err.message);
+        }
       }
     });
   }

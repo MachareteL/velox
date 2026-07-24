@@ -5,6 +5,14 @@ export interface Tenant {
   created_at: string;
 }
 
+export interface Vehicle {
+  id: string;
+  tenant_id: string;
+  title: string;
+  is_active: boolean;
+  created_at: string;
+}
+
 export type WhatsAppSessionStatus =
   | 'DISCONNECTED'
   | 'DISCONNECTED_NEED_QR'
@@ -52,8 +60,12 @@ export interface CapturedCall {
   url: string;
   distancia_km?: number | null;
   previa_valor?: number | null;
+  previa_minutos?: number | null;
   duration_ms: number;
   status: CapturedCallStatus;
+  completed_at?: string | null;
+  vehicle_id?: string | null;
+  vehicle?: Vehicle | null;
   response_payload?: Record<string, unknown> | null;
   error_message?: string | null;
   created_at: string;
