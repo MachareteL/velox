@@ -25,7 +25,7 @@ export function createSupabaseClient(
 
 export async function updateSessionStatus(
   supabase: SupabaseClient,
-  sessionId: string,
+  sessionIdOrTenantId: string,
   status: WhatsAppSessionStatus,
   qrCode?: string | null,
   workerId?: string | null
@@ -45,9 +45,9 @@ export async function updateSessionStatus(
   const { data, error } = await supabase
     .from('whatsapp_sessions')
     .update(updateData)
-    .eq('id', sessionId)
+    .or(`id.eq.${sessionIdOrTenantId},tenant_id.eq.${sessionIdOrTenantId}`)
     .select('*')
-    .single();
+    .maybeSingle();
 
   if (error) {
     console.error('Erro ao atualizar whatsapp_session:', error.message);
