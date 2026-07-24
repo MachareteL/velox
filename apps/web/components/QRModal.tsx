@@ -26,8 +26,6 @@ export function QRModal({ isOpen, onClose, status, qrCode }: QRModalProps) {
     setErrorMessage(null);
 
     try {
-      console.log(`[QRModal] Solicitando novo QR code para tenant ${user.id}...`);
-
       const { data, error } = await supabase
         .from('whatsapp_sessions')
         .upsert(
@@ -42,14 +40,10 @@ export function QRModal({ isOpen, onClose, status, qrCode }: QRModalProps) {
         .select('*');
 
       if (error) {
-        console.error('[QRModal] Erro do Supabase ao gerar QR Code:', error);
-        setErrorMessage(error.message);
-      } else {
-        console.log('[QRModal] Solicitação de QR Code enviada com sucesso:', data);
+        setErrorMessage('Não foi possível solicitar o QR Code no momento. Tente novamente.');
       }
     } catch (err: any) {
-      console.error('[QRModal] Exceção inesperada:', err);
-      setErrorMessage(err.message || 'Erro ao conectar ao banco de dados.');
+      setErrorMessage('Falha ao conectar com o servidor. Tente novamente.');
     } finally {
       setLoading(false);
     }
@@ -69,9 +63,9 @@ export function QRModal({ isOpen, onClose, status, qrCode }: QRModalProps) {
           <div className="w-12 h-12 rounded-full bg-emerald-500/10 text-emerald-400 flex items-center justify-center mx-auto mb-3 border border-emerald-500/20">
             <QrCode className="w-6 h-6" />
           </div>
-          <h3 className="text-xl font-bold text-white">Conexão via QR Code</h3>
+          <h3 className="text-xl font-bold text-white">Conectar WhatsApp</h3>
           <p className="text-xs text-gray-400 mt-1">
-            Escaneie o QR Code com o aplicativo WhatsApp no seu celular para autorizar o robô.
+            Escaneie o QR Code com o aplicativo WhatsApp no seu celular para autorizar o seu sistema.
           </p>
         </div>
 
@@ -87,16 +81,16 @@ export function QRModal({ isOpen, onClose, status, qrCode }: QRModalProps) {
               <CheckCircle2 className="w-16 h-16 text-emerald-400 mx-auto mb-3 animate-bounce" />
               <h4 className="text-lg font-semibold text-white">WhatsApp Conectado!</h4>
               <p className="text-xs text-gray-400 mt-1">
-                Sua automação está ativa e processando convites do Velox em milissegundos.
+                Sua automação está ativa e respondendo aos convites recebidos.
               </p>
             </div>
           ) : qrCode ? (
             <div className="flex flex-col items-center">
               <div className="p-3 bg-white rounded-xl shadow-lg border border-emerald-500/30">
-                <img src={qrCode} alt="WhatsApp QR Code" className="w-52 h-52 object-contain" />
+                <img src={qrCode} alt="QR Code WhatsApp" className="w-52 h-52 object-contain" />
               </div>
               <p className="text-xs text-emerald-400 font-medium mt-3 flex items-center gap-1">
-                <RefreshCw className="w-3 h-3 animate-spin" /> QR Code ativo. Escaneie agora!
+                <RefreshCw className="w-3 h-3 animate-spin" /> QR Code pronto. Escaneie agora!
               </p>
             </div>
           ) : (
@@ -104,7 +98,7 @@ export function QRModal({ isOpen, onClose, status, qrCode }: QRModalProps) {
               <AlertTriangle className="w-10 h-10 text-amber-400 mx-auto mb-3" />
               <p className="text-sm text-gray-300">Nenhum QR Code ativo no momento.</p>
               <p className="text-xs text-gray-500 mt-1">
-                Clique no botão abaixo para solicitar a geração do QR Code ao Worker na VPS.
+                Clique no botão abaixo para gerar um novo código de conexão.
               </p>
             </div>
           )}
@@ -118,7 +112,7 @@ export function QRModal({ isOpen, onClose, status, qrCode }: QRModalProps) {
               className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-semibold text-sm shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 transition-all disabled:opacity-50"
             >
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-              {loading ? 'Solicitando...' : 'Gerar Novo QR Code'}
+              {loading ? 'Gerando Código...' : 'Gerar Novo QR Code'}
             </button>
           </div>
         )}

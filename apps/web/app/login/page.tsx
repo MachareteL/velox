@@ -20,7 +20,6 @@ export default function LoginPage() {
     setErrorMsg(null);
 
     try {
-      // Login exclusivo de prestadores previamente cadastrados no Supabase
       const { data, error } = await supabase.auth.signInWithPassword({
         email,
         password,
@@ -32,7 +31,7 @@ export default function LoginPage() {
         router.push('/');
       }
     } catch (err: any) {
-      setErrorMsg(err.message || 'Credenciais inválidas. Verifique seu e-mail e senha.');
+      setErrorMsg('Credenciais inválidas. Verifique seu e-mail e senha.');
     } finally {
       setLoading(false);
     }
@@ -47,8 +46,8 @@ export default function LoginPage() {
               <Activity className="w-7 h-7 text-emerald-400" />
             </div>
           </div>
-          <h1 className="text-2xl font-extrabold text-white tracking-tight">Velox SaaS Automator</h1>
-          <p className="text-xs text-gray-400 mt-1">Acesso exclusivo para prestadores autorizados</p>
+          <h1 className="text-2xl font-extrabold text-white tracking-tight">Velox Automator</h1>
+          <p className="text-xs text-gray-400 mt-1">Automação de Convites para Prestadores</p>
         </div>
 
         {errorMsg && (
@@ -94,7 +93,7 @@ export default function LoginPage() {
             className="w-full mt-2 py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-bold text-sm shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 transition-all disabled:opacity-50"
           >
             {loading ? (
-              'Autenticando...'
+              'Entrando...'
             ) : (
               <>
                 Entrar no Painel
@@ -107,7 +106,7 @@ export default function LoginPage() {
         <div className="mt-8 pt-4 border-t border-gray-800/80 text-center">
           <p className="text-[11px] text-gray-500 flex items-center justify-center gap-1.5">
             <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
-            Sistema fechado. Cadastros são realizados pelo administrador.
+            Acesso exclusivo para prestadores autorizados.
           </p>
         </div>
       </div>

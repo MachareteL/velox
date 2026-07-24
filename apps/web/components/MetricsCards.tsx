@@ -22,21 +22,21 @@ export function MetricsCards({ calls }: MetricsCardsProps) {
       {/* Total Chamados */}
       <div className="glass-panel p-5 rounded-2xl relative overflow-hidden">
         <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Total Capturado</span>
+          <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Total Lidos</span>
           <div className="p-2 bg-blue-500/10 text-blue-400 rounded-xl border border-blue-500/20">
             <Zap className="w-5 h-5" />
           </div>
         </div>
         <div className="mt-3">
           <div className="text-3xl font-extrabold text-white">{totalCalls}</div>
-          <p className="text-xs text-gray-400 mt-1">Convites Velox processados</p>
+          <p className="text-xs text-gray-400 mt-1">Convites identificados no WhatsApp</p>
         </div>
       </div>
 
       {/* Aceites com Sucesso */}
       <div className="glass-panel p-5 rounded-2xl relative overflow-hidden">
         <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Aceites com Sucesso</span>
+          <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Convites Aceitos</span>
           <div className="p-2 bg-emerald-500/10 text-emerald-400 rounded-xl border border-emerald-500/20">
             <CheckCircle className="w-5 h-5" />
           </div>
@@ -44,29 +44,29 @@ export function MetricsCards({ calls }: MetricsCardsProps) {
         <div className="mt-3">
           <div className="text-3xl font-extrabold text-emerald-400">{successfulCalls}</div>
           <p className="text-xs text-gray-400 mt-1">
-            {totalCalls > 0 ? `${Math.round((successfulCalls / totalCalls) * 100)}% de taxa de sucesso` : 'Sem registros'}
+            {totalCalls > 0 ? `${Math.round((successfulCalls / totalCalls) * 100)}% de taxa de aproveitamento` : 'Sem chamados registrados'}
           </p>
         </div>
       </div>
 
-      {/* Falhas */}
+      {/* Não Aceitos */}
       <div className="glass-panel p-5 rounded-2xl relative overflow-hidden">
         <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Falhas / Erros</span>
+          <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Não Aceitos</span>
           <div className="p-2 bg-rose-500/10 text-rose-400 rounded-xl border border-rose-500/20">
             <AlertCircle className="w-5 h-5" />
           </div>
         </div>
         <div className="mt-3">
           <div className="text-3xl font-extrabold text-rose-400">{failedCalls}</div>
-          <p className="text-xs text-gray-400 mt-1">Requisições rejeitadas ou falhas</p>
+          <p className="text-xs text-gray-400 mt-1">Já aceitos por outros ou indisponíveis</p>
         </div>
       </div>
 
-      {/* Tempo Médio */}
+      {/* Tempo de Resposta */}
       <div className="glass-panel p-5 rounded-2xl relative overflow-hidden">
         <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Tempo Médio (POST)</span>
+          <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Velocidade de Aceite</span>
           <div className="p-2 bg-amber-500/10 text-amber-400 rounded-xl border border-amber-500/20">
             <Clock className="w-5 h-5" />
           </div>
@@ -75,7 +75,7 @@ export function MetricsCards({ calls }: MetricsCardsProps) {
           <div className="text-3xl font-extrabold text-amber-400">
             {avgDurationMs} <span className="text-lg font-normal text-gray-400">ms</span>
           </div>
-          <p className="text-xs text-gray-400 mt-1">Leitura + POST em milissegundos</p>
+          <p className="text-xs text-gray-400 mt-1">Tempo médio de resposta automática</p>
         </div>
       </div>
     </div>

@@ -26,14 +26,14 @@ export function Navbar({ status, onOpenQR }: NavbarProps) {
         return (
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">
             <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping" />
-            Aguardando QR Code
+            Aguardando Leitura do QR Code
           </span>
         );
       case 'FAILED':
         return (
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">
             <span className="w-2 h-2 rounded-full bg-rose-500" />
-            Erro na Conexão
+            Desconectado
           </span>
         );
       default:
@@ -57,9 +57,9 @@ export function Navbar({ status, onOpenQR }: NavbarProps) {
           </div>
           <div>
             <h1 className="font-bold text-lg text-white tracking-tight flex items-center gap-2">
-              Velox SaaS <span className="text-xs font-mono text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/40">Multi-Tenant</span>
+              Velox Automator
             </h1>
-            <p className="text-xs text-gray-400">Automação Velox em Tempo Real</p>
+            <p className="text-xs text-gray-400">Automação Inteligente de Convites</p>
           </div>
         </div>
 
@@ -78,12 +78,12 @@ export function Navbar({ status, onOpenQR }: NavbarProps) {
             <div className="flex items-center gap-3 pl-2 border-l border-gray-800">
               <div className="hidden sm:flex items-center gap-2 text-xs text-gray-300">
                 <UserIcon className="w-3.5 h-3.5 text-emerald-400" />
-                <span className="truncate max-w-[150px]">{user.email}</span>
+                <span className="truncate max-w-[160px]">{user.email}</span>
               </div>
 
               <button
                 onClick={signOut}
-                title="Sair da conta"
+                title="Sair do sistema"
                 className="p-2 rounded-lg text-gray-400 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
               >
                 <LogOut className="w-4 h-4" />

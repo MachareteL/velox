@@ -14,22 +14,22 @@ export function CallsFeed({ calls }: CallsFeedProps) {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-lg font-bold text-white flex items-center gap-2">
-            Feed de Chamados Capturados
+            Feed de Chamados Processados
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
           </h2>
-          <p className="text-xs text-gray-400">Histórico em tempo real de convites lidos e aceitos via WhatsApp</p>
+          <p className="text-xs text-gray-400">Acompanhe ao vivo os convites lidos e respondidos pelo seu sistema</p>
         </div>
         <span className="text-xs font-mono px-3 py-1 bg-gray-800 rounded-full text-gray-300 border border-gray-700">
-          {calls.length} registros
+          {calls.length} chamados
         </span>
       </div>
 
       {calls.length === 0 ? (
         <div className="text-center py-12 border border-dashed border-gray-800 rounded-xl">
           <Clock className="w-12 h-12 text-gray-600 mx-auto mb-3" />
-          <p className="text-sm font-medium text-gray-400">Nenhum chamado capturado ainda.</p>
+          <p className="text-sm font-medium text-gray-400">Nenhum chamado recebido ainda.</p>
           <p className="text-xs text-gray-600 mt-1">
-            Certifique-se de que seu WhatsApp esteja conectado. Quando um link do Velox for recebido, ele aparecerá aqui.
+            Mantenha seu WhatsApp conectado. Quando uma mensagem com link de convite for recebida, ela aparecerá aqui instantaneamente.
           </p>
         </div>
       ) : (
@@ -37,12 +37,12 @@ export function CallsFeed({ calls }: CallsFeedProps) {
           <table className="w-full text-left text-sm">
             <thead className="text-xs uppercase text-gray-400 bg-gray-950/60 border-b border-gray-800">
               <tr>
-                <th className="py-3 px-4 rounded-l-lg">Status</th>
-                <th className="py-3 px-4">Velocidade</th>
+                <th className="py-3 px-4 rounded-l-lg">Resultado</th>
+                <th className="py-3 px-4">Tempo de Resposta</th>
                 <th className="py-3 px-4">Distância</th>
                 <th className="py-3 px-4">Prévia Calculada</th>
-                <th className="py-3 px-4">URL do Convite</th>
-                <th className="py-3 px-4 rounded-r-lg text-right">Data/Hora</th>
+                <th className="py-3 px-4">Link do Convite</th>
+                <th className="py-3 px-4 rounded-r-lg text-right">Horário</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800/50">
@@ -56,7 +56,7 @@ export function CallsFeed({ calls }: CallsFeedProps) {
                       </span>
                     ) : (
                       <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-rose-500/10 text-rose-400 border border-rose-500/20">
-                        <XCircle className="w-3.5 h-3.5" /> Erro
+                        <XCircle className="w-3.5 h-3.5" /> Indisponível
                       </span>
                     )}
                   </td>
@@ -95,7 +95,7 @@ export function CallsFeed({ calls }: CallsFeedProps) {
                       className="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 underline truncate max-w-[240px]"
                     >
                       <ExternalLink className="w-3 h-3 flex-shrink-0" />
-                      {call.url}
+                      Visualizar Convite
                     </a>
                   </td>
 

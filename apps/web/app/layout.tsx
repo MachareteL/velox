@@ -3,8 +3,8 @@ import React from 'react';
 import { AuthProvider } from '../lib/auth-context';
 
 export const metadata = {
-  title: 'Velox WhatsApp SaaS Automator',
-  description: 'Painel multi-tenant de automação de convites no WhatsApp em milissegundos',
+  title: 'Velox Automator | Automação Inteligente de Convites',
+  description: 'Painel exclusivo de automação e aceite instantâneo de convites para prestadores',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
