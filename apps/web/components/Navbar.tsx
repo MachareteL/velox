@@ -1,8 +1,9 @@
 'use client';
 
 import React from 'react';
-import { Activity, ShieldCheck, QrCode, Smartphone } from 'lucide-react';
+import { Activity, QrCode, LogOut, User as UserIcon } from 'lucide-react';
 import type { WhatsAppSessionStatus } from '@velox/types';
+import { useAuth } from '../lib/auth-context';
 
 interface NavbarProps {
   status: WhatsAppSessionStatus;
@@ -10,6 +11,8 @@ interface NavbarProps {
 }
 
 export function Navbar({ status, onOpenQR }: NavbarProps) {
+  const { user, signOut } = useAuth();
+
   const getStatusBadge = () => {
     switch (status) {
       case 'CONNECTED':
@@ -54,7 +57,7 @@ export function Navbar({ status, onOpenQR }: NavbarProps) {
           </div>
           <div>
             <h1 className="font-bold text-lg text-white tracking-tight flex items-center gap-2">
-              Velox SaaS <span className="text-xs font-mono text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/40">v2.0 TS</span>
+              Velox SaaS <span className="text-xs font-mono text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/40">Multi-Tenant</span>
             </h1>
             <p className="text-xs text-gray-400">Automação Velox em Tempo Real</p>
           </div>
@@ -70,6 +73,23 @@ export function Navbar({ status, onOpenQR }: NavbarProps) {
             <QrCode className="w-4 h-4" />
             Conectar WhatsApp
           </button>
+
+          {user && (
+            <div className="flex items-center gap-3 pl-2 border-l border-gray-800">
+              <div className="hidden sm:flex items-center gap-2 text-xs text-gray-300">
+                <UserIcon className="w-3.5 h-3.5 text-emerald-400" />
+                <span className="truncate max-w-[150px]">{user.email}</span>
+              </div>
+
+              <button
+                onClick={signOut}
+                title="Sair da conta"
+                className="p-2 rounded-lg text-gray-400 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </header>

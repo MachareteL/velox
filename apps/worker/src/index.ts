@@ -11,66 +11,82 @@ const SUPABASE_ANON_KEY =
   process.env.SUPABASE_ANON_KEY ||
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1pcnd3bWN5a2Fsc2hwZmFuZ2JkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4NDk2NjIsImV4cCI6MjEwMDQyNTY2Mn0.M5HpVaG8EvXNK0YY-kHJuZEm3Hr0V95HPNE3CMy5ezI';
 
-const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
-const DEFAULT_SESSION_ID = '00000000-0000-0000-0000-000000000001';
-
 async function main() {
-  console.log('--- VELOX WHATSAPP AUTOMATION WORKER INICIADO ---');
+  console.log('=== VELOX MULTI-TENANT WORKER ORCHESTRATOR INICIADO ===');
 
   const supabase = createSupabaseClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-  let activeWorker: WhatsAppWorker | null = null;
+  const activeWorkers = new Map<string, WhatsAppWorker>();
 
-  const startWorker = async () => {
-    if (activeWorker) return;
-    console.log('[Main] Iniciando novo robô de automação WhatsApp...');
-    activeWorker = new WhatsAppWorker(DEFAULT_TENANT_ID, DEFAULT_SESSION_ID, supabase);
-    await activeWorker.start();
+  const startWorkerForTenant = async (tenantId: string, sessionId: string) => {
+    if (activeWorkers.has(tenantId)) {
+      console.log(`[Orchestrator] Worker já ativo para tenant ${tenantId}`);
+      return;
+    }
+
+    console.log(`[Orchestrator] Iniciando worker isolado para tenant ${tenantId}...`);
+    const worker = new WhatsAppWorker(tenantId, sessionId, supabase);
+    activeWorkers.set(tenantId, worker);
+    await worker.start();
   };
 
-  // Escuta requisições de QR code ou reconexão vindas do Dashboard Web via Supabase Realtime
+  const stopWorkerForTenant = async (tenantId: string) => {
+    const worker = activeWorkers.get(tenantId);
+    if (worker) {
+      console.log(`[Orchestrator] Encerrando worker do tenant ${tenantId}...`);
+      await worker.stop();
+      activeWorkers.delete(tenantId);
+    }
+  };
+
+  // 1. Carrega sessões existentes que demandam worker no boot
+  const { data: activeSessions } = await supabase
+    .from('whatsapp_sessions')
+    .select('*')
+    .in('status', ['DISCONNECTED_NEED_QR', 'CONNECTED']);
+
+  if (activeSessions && activeSessions.length > 0) {
+    console.log(`[Orchestrator] Encontradas ${activeSessions.length} sessões ativas no boot.`);
+    for (const session of activeSessions) {
+      await startWorkerForTenant(session.tenant_id, session.id);
+    }
+  } else {
+    console.log('[Orchestrator] Aguardando novas solicitações de QR Code no banco de dados...');
+  }
+
+  // 2. Escuta global de alterações na tabela whatsapp_sessions para todos os tenants
   supabase
-    .channel('worker-session-listener')
+    .channel('multi-tenant-sessions-listener')
     .on(
       'postgres_changes',
       {
-        event: 'UPDATE',
+        event: '*',
         schema: 'public',
         table: 'whatsapp_sessions',
-        filter: `id=eq.${DEFAULT_SESSION_ID}`,
       },
       async (payload: any) => {
-        const newStatus = payload.new?.status;
-        console.log(`[Main] Status da sessão atualizado via Dashboard: ${newStatus}`);
+        const session = payload.new;
+        if (!session) return;
 
-        if (newStatus === 'DISCONNECTED_NEED_QR' && !activeWorker) {
-          await startWorker();
+        console.log(`[Orchestrator] Evento de sessão [${session.tenant_id}]: status = ${session.status}`);
+
+        if (session.status === 'DISCONNECTED_NEED_QR' || session.status === 'CONNECTED') {
+          await startWorkerForTenant(session.tenant_id, session.id);
+        } else if (session.status === 'DISCONNECTED') {
+          await stopWorkerForTenant(session.tenant_id);
         }
       }
     )
     .subscribe();
 
-  // Verifica estado inicial no banco de dados
-  const { data: session } = await supabase
-    .from('whatsapp_sessions')
-    .select('status')
-    .eq('id', DEFAULT_SESSION_ID)
-    .single();
-
-  if (session?.status === 'DISCONNECTED_NEED_QR' || session?.status === 'CONNECTED') {
-    await startWorker();
-  } else {
-    console.log('[Main] Worker aguardando solicitação de conexão via Web App Dashboard...');
-  }
-
   process.on('uncaughtException', (err) => {
-    console.error('[Main] Exceção não tratada:', err.message);
+    console.error('[Orchestrator] Exceção não tratada:', err.message);
   });
 
   process.on('unhandledRejection', (reason) => {
-    console.error('[Main] Rejeição não tratada:', reason);
+    console.error('[Orchestrator] Rejeição não tratada:', reason);
   });
 }
 
 main().catch((err) => {
-  console.error('[Main] Erro fatal no worker:', err);
+  console.error('[Orchestrator] Erro fatal no orquestrador:', err);
 });

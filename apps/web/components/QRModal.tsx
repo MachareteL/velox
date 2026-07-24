@@ -1,9 +1,10 @@
 'use client';
 
 import React, { useState } from 'react';
-import { X, QrCode, RefreshCw, CheckCircle2, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { X, QrCode, RefreshCw, CheckCircle2, AlertTriangle } from 'lucide-react';
 import type { WhatsAppSessionStatus } from '@velox/types';
-import { supabase, DEFAULT_SESSION_ID } from '../lib/supabase';
+import { supabase } from '../lib/supabase';
+import { useAuth } from '../lib/auth-context';
 
 interface QRModalProps {
   isOpen: boolean;
@@ -13,11 +14,13 @@ interface QRModalProps {
 }
 
 export function QRModal({ isOpen, onClose, status, qrCode }: QRModalProps) {
+  const { user } = useAuth();
   const [loading, setLoading] = useState(false);
 
   if (!isOpen) return null;
 
   const handleRequestQR = async () => {
+    if (!user) return;
     setLoading(true);
     try {
       await supabase
@@ -27,7 +30,7 @@ export function QRModal({ isOpen, onClose, status, qrCode }: QRModalProps) {
           qr_code: null,
           updated_at: new Date().toISOString(),
         })
-        .eq('id', DEFAULT_SESSION_ID);
+        .eq('tenant_id', user.id);
     } catch (err) {
       console.error('Erro ao solicitar QR Code:', err);
     } finally {
@@ -67,7 +70,6 @@ export function QRModal({ isOpen, onClose, status, qrCode }: QRModalProps) {
           ) : qrCode ? (
             <div className="flex flex-col items-center">
               <div className="p-3 bg-white rounded-xl shadow-lg border border-emerald-500/30">
-                {/* Renderização da Imagem Base64 gerada pelo Worker */}
                 <img src={qrCode} alt="WhatsApp QR Code" className="w-52 h-52 object-contain" />
               </div>
               <p className="text-xs text-emerald-400 font-medium mt-3 flex items-center gap-1">
