@@ -16,23 +16,40 @@ interface QRModalProps {
 export function QRModal({ isOpen, onClose, status, qrCode }: QRModalProps) {
   const { user } = useAuth();
   const [loading, setLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
   const handleRequestQR = async () => {
     if (!user) return;
     setLoading(true);
+    setErrorMessage(null);
+
     try {
-      await supabase
+      console.log(`[QRModal] Solicitando novo QR code para tenant ${user.id}...`);
+
+      const { data, error } = await supabase
         .from('whatsapp_sessions')
-        .update({
-          status: 'DISCONNECTED_NEED_QR',
-          qr_code: null,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('tenant_id', user.id);
-    } catch (err) {
-      console.error('Erro ao solicitar QR Code:', err);
+        .upsert(
+          {
+            tenant_id: user.id,
+            status: 'DISCONNECTED_NEED_QR',
+            qr_code: null,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'tenant_id' }
+        )
+        .select('*');
+
+      if (error) {
+        console.error('[QRModal] Erro do Supabase ao gerar QR Code:', error);
+        setErrorMessage(error.message);
+      } else {
+        console.log('[QRModal] Solicitação de QR Code enviada com sucesso:', data);
+      }
+    } catch (err: any) {
+      console.error('[QRModal] Exceção inesperada:', err);
+      setErrorMessage(err.message || 'Erro ao conectar ao banco de dados.');
     } finally {
       setLoading(false);
     }
@@ -57,6 +74,12 @@ export function QRModal({ isOpen, onClose, status, qrCode }: QRModalProps) {
             Escaneie o QR Code com o aplicativo WhatsApp no seu celular para autorizar o robô.
           </p>
         </div>
+
+        {errorMessage && (
+          <div className="mb-4 p-3 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl text-xs text-center font-medium">
+            {errorMessage}
+          </div>
+        )}
 
         <div className="bg-gray-950/80 rounded-xl border border-gray-800 p-6 flex flex-col items-center justify-center min-h-[260px] relative">
           {status === 'CONNECTED' ? (

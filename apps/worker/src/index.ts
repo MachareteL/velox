@@ -38,11 +38,15 @@ async function main() {
     }
   };
 
-  // 1. Carrega sessões existentes que demandam worker no boot
-  const { data: activeSessions } = await supabase
+  // 1. Carrega sessões existentes no boot
+  const { data: activeSessions, error: bootErr } = await supabase
     .from('whatsapp_sessions')
     .select('*')
     .in('status', ['DISCONNECTED_NEED_QR', 'CONNECTED']);
+
+  if (bootErr) {
+    console.error('[Orchestrator] Erro ao carregar sessões no boot:', bootErr);
+  }
 
   if (activeSessions && activeSessions.length > 0) {
     console.log(`[Orchestrator] Encontradas ${activeSessions.length} sessões ativas no boot.`);
@@ -67,7 +71,7 @@ async function main() {
         const session = payload.new;
         if (!session) return;
 
-        console.log(`[Orchestrator] Evento de sessão [${session.tenant_id}]: status = ${session.status}`);
+        console.log(`[Orchestrator] Evento de sessão [tenant: ${session.tenant_id}]: status = ${session.status}`);
 
         if (session.status === 'DISCONNECTED_NEED_QR' || session.status === 'CONNECTED') {
           await startWorkerForTenant(session.tenant_id, session.id);
@@ -76,7 +80,9 @@ async function main() {
         }
       }
     )
-    .subscribe();
+    .subscribe((status: string) => {
+      console.log(`[Orchestrator] Status do Canal Realtime Supabase: ${status}`);
+    });
 
   process.on('uncaughtException', (err) => {
     console.error('[Orchestrator] Exceção não tratada:', err.message);

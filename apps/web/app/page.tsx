@@ -33,35 +33,47 @@ export default function DashboardPage() {
     if (!user) return;
     const tenantId = user.id;
 
-    // 1. Carrega o estado inicial da sessão do WhatsApp do Prestador Autenticado
+    console.log(`[Dashboard] Carregando dados para o prestador [tenant_id: ${tenantId}]`);
+
+    // 1. Carrega o estado inicial da sessão do WhatsApp
     const fetchInitialSession = async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('whatsapp_sessions')
         .select('*')
         .eq('tenant_id', tenantId)
-        .single();
+        .maybeSingle();
+
+      if (error) {
+        console.error('[Dashboard] Erro ao buscar whatsapp_sessions:', error);
+      }
 
       if (data) {
+        console.log('[Dashboard] Sessão inicial carregada:', data);
         setSessionStatus(data.status as WhatsAppSessionStatus);
         setQrCode(data.qr_code);
         if (data.status === 'DISCONNECTED_NEED_QR') {
           setIsQRModalOpen(true);
         }
       } else {
-        // Se ainda não existir registro da sessão para este tenant, cria um registro inicial
-        const { data: newSession } = await supabase
+        console.log('[Dashboard] Nenhuma sessão encontrada. Criando sessão padrão...');
+        const { data: newSession, error: createErr } = await supabase
           .from('whatsapp_sessions')
-          .insert([{ tenant_id: tenantId, status: 'DISCONNECTED' }])
+          .upsert(
+            { tenant_id: tenantId, status: 'DISCONNECTED' },
+            { onConflict: 'tenant_id' }
+          )
           .select('*')
           .single();
 
-        if (newSession) {
+        if (createErr) {
+          console.error('[Dashboard] Erro ao criar sessão inicial:', createErr);
+        } else if (newSession) {
           setSessionStatus(newSession.status as WhatsAppSessionStatus);
         }
       }
     };
 
-    // 2. Carrega lista de chamados capturados pertencentes ao tenant
+    // 2. Carrega lista de chamados capturados
     const fetchInitialCalls = async () => {
       const { data } = await supabase
         .from('captured_calls')
@@ -73,7 +85,7 @@ export default function DashboardPage() {
       if (data) setCalls(data as CapturedCall[]);
     };
 
-    // 3. Carrega lista de logs do sistema pertencentes ao tenant
+    // 3. Carrega lista de logs do sistema
     const fetchInitialLogs = async () => {
       const { data } = await supabase
         .from('system_logs')
@@ -102,6 +114,7 @@ export default function DashboardPage() {
         },
         (payload: any) => {
           const updated = payload.new as WhatsAppSession;
+          console.log('[Dashboard Realtime] Recebida atualização da sessão:', updated);
           if (updated) {
             setSessionStatus(updated.status);
             setQrCode(updated.qr_code || null);
@@ -122,6 +135,7 @@ export default function DashboardPage() {
         },
         (payload: any) => {
           const newCall = payload.new as CapturedCall;
+          console.log('[Dashboard Realtime] Novo chamado capturado:', newCall);
           setCalls((prev) => [newCall, ...prev]);
         }
       )
@@ -135,10 +149,13 @@ export default function DashboardPage() {
         },
         (payload: any) => {
           const newLog = payload.new as SystemLog;
+          console.log('[Dashboard Realtime] Novo log do sistema:', newLog);
           setLogs((prev) => [newLog, ...prev]);
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log(`[Dashboard Realtime] Canal inscrito com status: ${status}`);
+      });
 
     return () => {
       supabase.removeChannel(channel);
