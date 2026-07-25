@@ -55,7 +55,7 @@ export class WhatsAppWorker {
       ],
     };
 
-    const systemChromePath = getWindowsChromePath();
+    const systemChromePath = getWindowsChromePath() || process.env.PUPPETEER_EXECUTABLE_PATH;
     if (systemChromePath) {
       console.log(`[Worker] Utilizando navegador Chrome instalado em: ${systemChromePath}`);
       puppeteerConfig.executablePath = systemChromePath;
