@@ -73,6 +73,15 @@ async function main() {
         table: 'whatsapp_sessions',
       },
       async (payload: any) => {
+        if (payload.eventType === 'DELETE') {
+          const oldSession = payload.old;
+          if (oldSession && oldSession.tenant_id) {
+            console.log(`[Orchestrator] Sessão deletada do banco [tenant: ${oldSession.tenant_id}]. Encerrando worker...`);
+            await stopWorkerForTenant(oldSession.tenant_id);
+          }
+          return;
+        }
+
         const session = payload.new;
         if (!session) return;
 
