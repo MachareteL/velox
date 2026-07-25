@@ -6,10 +6,13 @@ import { WhatsAppWorker } from './whatsapp';
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 dotenv.config();
 
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://mirwwmcykalshpfangbd.supabase.co';
-const SUPABASE_ANON_KEY =
-  process.env.SUPABASE_ANON_KEY ||
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1pcnd3bWN5a2Fsc2hwZmFuZ2JkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4NDk2NjIsImV4cCI6MjEwMDQyNTY2Mn0.M5HpVaG8EvXNK0YY-kHJuZEm3Hr0V95HPNE3CMy5ezI';
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
+
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+  console.error('[Worker] ERRO FATAL: SUPABASE_URL e SUPABASE_ANON_KEY são obrigatórias no .env!');
+  process.exit(1);
+}
 
 async function main() {
   console.log('=== VELOX MULTI-TENANT WORKER ORCHESTRATOR INICIADO ===');
