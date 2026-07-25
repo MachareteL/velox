@@ -1,7 +1,7 @@
 'use client';
 
-import React from 'react';
-import { Activity, ShieldAlert, Info, AlertTriangle } from 'lucide-react';
+import React, { useState } from 'react';
+import { Terminal, ShieldAlert, Info, AlertTriangle, Filter } from 'lucide-react';
 import type { SystemLog } from '@velox/types';
 
 interface SystemLogViewerProps {
@@ -9,6 +9,8 @@ interface SystemLogViewerProps {
 }
 
 export function SystemLogViewer({ logs }: SystemLogViewerProps) {
+  const [filterLevel, setFilterLevel] = useState<'ALL' | 'INFO' | 'WARN' | 'ERROR'>('ALL');
+
   const getLogIcon = (level: string) => {
     switch (level) {
       case 'ERROR':
@@ -30,6 +32,10 @@ export function SystemLogViewer({ logs }: SystemLogViewerProps) {
         return 'Convite Aceito';
       case 'HTTP_POST_ERROR':
         return 'Convite Não Aceito';
+      case 'AUTOMATION_PAUSED':
+        return 'Automação Pausada';
+      case 'FLEET_CAPACITY_REACHED':
+        return 'Capacidade da Frota Atingida';
       case 'RECONNECT':
         return 'Reconexão de Segurança';
       default:
@@ -37,28 +43,76 @@ export function SystemLogViewer({ logs }: SystemLogViewerProps) {
     }
   };
 
+  const filteredLogs = logs.filter((log) => {
+    if (filterLevel === 'ALL') return true;
+    return log.level === filterLevel;
+  });
+
   return (
-    <div className="glass-panel rounded-2xl p-6">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <Activity className="w-5 h-5 text-emerald-400" />
-          <h2 className="text-lg font-bold text-white">Histórico de Atividades</h2>
+    <div className="glass-panel rounded-2xl p-6 border border-gray-800">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 border-b border-gray-800/60 pb-3">
+        {/* Title + Traffic Lights Header */}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5">
+            <span className="w-3 h-3 rounded-full bg-rose-500/80 inline-block" />
+            <span className="w-3 h-3 rounded-full bg-amber-500/80 inline-block" />
+            <span className="w-3 h-3 rounded-full bg-emerald-500/80 inline-block" />
+          </div>
+          <div className="flex items-center gap-2 pl-2 border-l border-gray-800">
+            <Terminal className="w-4 h-4 text-emerald-400" />
+            <h2 className="text-sm font-bold text-white">Console de Histórico de Atividades</h2>
+          </div>
         </div>
-        <span className="text-xs text-gray-500">Atualizações ao Vivo</span>
+
+        {/* Level Filters */}
+        <div className="flex items-center gap-1.5 bg-gray-950 p-1 rounded-xl border border-gray-800">
+          <button
+            onClick={() => setFilterLevel('ALL')}
+            className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg transition-all ${
+              filterLevel === 'ALL' ? 'bg-gray-800 text-white shadow-sm' : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            Todos ({logs.length})
+          </button>
+          <button
+            onClick={() => setFilterLevel('INFO')}
+            className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg transition-all ${
+              filterLevel === 'INFO' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            Sucesso
+          </button>
+          <button
+            onClick={() => setFilterLevel('WARN')}
+            className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg transition-all ${
+              filterLevel === 'WARN' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            Avisos
+          </button>
+          <button
+            onClick={() => setFilterLevel('ERROR')}
+            className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg transition-all ${
+              filterLevel === 'ERROR' ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            Erros
+          </button>
+        </div>
       </div>
 
-      <div className="bg-gray-950 rounded-xl p-4 text-xs max-h-72 overflow-y-auto border border-gray-800 divide-y divide-gray-900">
-        {logs.length === 0 ? (
-          <div className="text-gray-600 py-6 text-center">Nenhuma atividade registrada no momento.</div>
+      <div className="bg-gray-950/90 rounded-xl p-4 text-xs max-h-72 overflow-y-auto border border-gray-900 font-mono divide-y divide-gray-900">
+        {filteredLogs.length === 0 ? (
+          <div className="text-gray-600 py-6 text-center text-xs">Nenhuma atividade registrada para este nível de filtro.</div>
         ) : (
-          logs.map((log) => (
-            <div key={log.id} className="py-2.5 flex items-start gap-3 hover:bg-gray-900/50 px-2 rounded">
-              <span className="text-gray-500 font-mono flex-shrink-0 select-none">
+          filteredLogs.map((log) => (
+            <div key={log.id} className="py-2.5 flex items-start gap-3 hover:bg-gray-900/60 px-2 rounded-lg transition-colors">
+              <span className="text-gray-500 flex-shrink-0 select-none text-[11px]">
                 [{new Date(log.created_at).toLocaleTimeString('pt-BR')}]
               </span>
               {getLogIcon(log.level)}
-              <span className="font-semibold text-gray-300 flex-shrink-0">{getEventName(log.event_type)}:</span>
-              <span className="text-gray-400 truncate">{log.message}</span>
+              <span className="font-semibold text-gray-200 flex-shrink-0 text-[11px]">{getEventName(log.event_type)}:</span>
+              <span className="text-gray-400 truncate text-[11px]">{log.message}</span>
             </div>
           ))
         )}
