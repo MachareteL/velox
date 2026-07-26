@@ -180,19 +180,17 @@ export class VeloxScraper {
         });
         debugInfo.scriptJsonFound = scriptJson;
 
-        // Estratégia C: Extrair parâmetro da URL do convite como fallback final
+        // Estratégia C: Extrair parâmetro ChaveConvite da URL do convite como fallback final
+        let chaveConvite = '';
         try {
           const parsedUrl = new URL(url);
-          const chaveQuery = parsedUrl.searchParams.get('ChaveConvite');
-          if (!idAtendimentoConvite && chaveQuery) {
-            idAtendimentoConvite = chaveQuery;
-          }
+          chaveConvite = parsedUrl.searchParams.get('ChaveConvite') || '';
         } catch {
           // Ignore URL parse error
         }
 
-        // Validação estrita
-        if (!id || !idAtendimentoConvite) {
+        // Validação: Exige Id numérico ou ChaveConvite da URL
+        if (!id && !chaveConvite) {
           if ($('.text-danger').length > 0) {
             const dangerMsg = $('.text-danger').text().trim();
             if (dangerMsg) throw new NonRetryableError(`Alerta Velox no HTML: "${dangerMsg}"`);
@@ -200,7 +198,7 @@ export class VeloxScraper {
 
           const keysFoundStr = Object.keys(allInputs).join(', ') || 'Nenhum input encontrado';
           throw new Error(
-            `Falha na extração de formulário do convite! (Id: "${id}", IdAtendimentoConvite: "${idAtendimentoConvite}"). ` +
+            `Falha na extração de ID/Chave do convite Velox! (Id: "${id}", Chave: "${chaveConvite}"). ` +
             `Título da Página: "${pageTitle}". Inputs encontrados: [${keysFoundStr}]. Snippet do corpo: "${bodyText.slice(0, 200)}"`
           );
         }
