@@ -48,7 +48,7 @@ export function CallsFeed({ calls, onRefreshCalls }: CallsFeedProps) {
     }
 
     const createdAtMs = new Date(call.created_at).getTime();
-    const durationMin = call.previa_minutos || 90;
+    const durationMin = call.previa_minutos || 50;
     const isStillActive = Date.now() < createdAtMs + durationMin * 60 * 1000;
 
     if (isStillActive) {
@@ -210,7 +210,7 @@ export function CallsFeed({ calls, onRefreshCalls }: CallsFeedProps) {
                     <td className="py-3.5 px-4 font-semibold text-white">
                       <span className="inline-flex items-center gap-1 text-amber-300 text-xs font-mono">
                         <Clock className="w-3.5 h-3.5 text-amber-400" />
-                        {call.previa_minutos || 90} min
+                        {call.previa_minutos || 50} min
                       </span>
                     </td>
 

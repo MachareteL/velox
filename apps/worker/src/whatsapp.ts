@@ -220,7 +220,7 @@ export class WhatsAppWorker {
           const now = Date.now();
           const activeCalls = (calls || []).filter((call) => {
             const createdAtMs = new Date(call.created_at).getTime();
-            const durationMin = call.previa_minutos || 90;
+            const durationMin = call.previa_minutos || 50;
             const expiresAtMs = createdAtMs + durationMin * 60 * 1000;
             return now < expiresAtMs;
           });

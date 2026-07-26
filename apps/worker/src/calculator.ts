@@ -5,14 +5,14 @@
  */
 export function calcularPrevia(distanciaInput: string | number | undefined | null): number {
   if (distanciaInput === undefined || distanciaInput === null) {
-    return 90;
+    return 50;
   }
 
   const distancia = typeof distanciaInput === 'number' 
     ? distanciaInput 
     : parseInt(distanciaInput.replace(/\D/g, ''), 10) || 0;
 
-  if (distancia <= 85) return 90;
+  if (distancia <= 85) return 50;
   if (distancia <= 170) return 120;
   return 150;
 }
