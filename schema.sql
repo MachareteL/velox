@@ -138,6 +138,10 @@ DROP POLICY IF EXISTS "Calls - Permissao de Insercao" ON public.captured_calls;
 CREATE POLICY "Calls - Permissao de Insercao" ON public.captured_calls
   FOR INSERT WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Calls - Permissao de Atualizacao" ON public.captured_calls;
+CREATE POLICY "Calls - Permissao de Atualizacao" ON public.captured_calls
+  FOR UPDATE USING (true);
+
 -- 8. POLÍTICAS DE RLS PARA `system_logs`
 -- ------------------------------------------------------------------------------
 DROP POLICY IF EXISTS "Logs - Leitura individual" ON public.system_logs;

@@ -86,7 +86,7 @@ export async function completeCapturedCall(
     })
     .eq('id', callId)
     .select('*')
-    .single();
+    .maybeSingle();
 
   if (error) {
     console.error('Erro ao finalizar chamado:', error.message);
