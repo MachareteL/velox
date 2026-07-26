@@ -3,6 +3,20 @@ import * as cheerio from 'cheerio';
 import type { AcceptPayload } from '@velox/types';
 import { calcularPrevia } from './calculator';
 
+export interface ScraperDebugInfo {
+  failedStep?: 'HTTP_GET' | 'HTML_PARSING' | 'FORM_EXTRACTION' | 'HTTP_POST';
+  getFinalUrl?: string;
+  getStatusCode?: number;
+  postStatusCode?: number;
+  pageTitle?: string;
+  bodyTextSnippet?: string;
+  rawHtmlSnippet?: string;
+  formAction?: string;
+  allInputsFound?: Record<string, string>;
+  scriptJsonFound?: Record<string, unknown> | null;
+  errorStack?: string;
+}
+
 export interface ScraperResult {
   success: boolean;
   durationMs: number;
@@ -14,6 +28,7 @@ export interface ScraperResult {
   responsePayload?: Record<string, unknown>;
   errorMessage?: string;
   attemptsMade: number;
+  debugInfo?: ScraperDebugInfo;
 }
 
 export class NonRetryableError extends Error {
@@ -29,90 +44,183 @@ export class VeloxScraper {
   constructor(timeoutMs = 5000) {
     this.http = axios.create({
       timeout: timeoutMs,
+      maxRedirects: 5,
+      validateStatus: () => true, // Permite capturar respostas como 302, 400, 404 sem estourar exceção imediatamente
       headers: {
         'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
       },
     });
   }
 
   /**
-   * Processa a URL de convite do Velox realizando o GET e POST em ms com Retry Inteligente
+   * Processa a URL de convite do Velox realizando o GET e POST em ms com Diagnóstico Detalhado
    */
   public async processarConvite(url: string, maxAttempts = 2): Promise<ScraperResult> {
     const startTime = Date.now();
     let lastError: any = null;
     let attemptsMade = 0;
+    let debugInfo: ScraperDebugInfo = {};
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       attemptsMade = attempt;
+      debugInfo = {};
 
       try {
         if (attempt > 1) {
           console.log(`[Scraper] Tentativa ${attempt} de ${maxAttempts} para aceitar o convite: ${url}`);
         }
 
-        // 1. GET na página do convite
+        // -------------------------------------------------------------
+        // ETAPA 1: GET na página de convite
+        // -------------------------------------------------------------
+        debugInfo.failedStep = 'HTTP_GET';
         const responseGet = await this.http.get<string>(url);
-        const $ = cheerio.load(responseGet.data);
+        
+        debugInfo.getStatusCode = responseGet.status;
+        debugInfo.getFinalUrl = responseGet.request?.res?.responseUrl || url;
+        const htmlData = typeof responseGet.data === 'string' ? responseGet.data : String(responseGet.data || '');
+        debugInfo.rawHtmlSnippet = htmlData.slice(0, 1500);
 
-        // 2. Verificação de convite já aceito por outro prestador (NÃO deve realizar retry)
-        const textContent = $('body').text();
-        if (textContent.includes('Convite já aceito por outro prestador')) {
+        if (responseGet.status < 200 || responseGet.status >= 300) {
+          throw new Error(
+            `HTTP GET retornou status ${responseGet.status} (${responseGet.statusText}) ao acessar ${url}`
+          );
+        }
+
+        // -------------------------------------------------------------
+        // ETAPA 2: PARSING HTML & DIAGNÓSTICO DO CORPO
+        // -------------------------------------------------------------
+        debugInfo.failedStep = 'HTML_PARSING';
+        const $ = cheerio.load(htmlData);
+
+        const pageTitle = $('title').text().trim() || 'Sem Título';
+        debugInfo.pageTitle = pageTitle;
+
+        const bodyText = $('body').text().replace(/\s+/g, ' ').trim();
+        debugInfo.bodyTextSnippet = bodyText.slice(0, 600);
+
+        // Verificações de recusas conhecidas da Velox
+        if (bodyText.includes('Convite já aceito por outro prestador')) {
           throw new NonRetryableError('Convite já aceito por outro prestador!');
         }
-
-        // Extração dos campos ocultos do formulário
-        let id = ($('#Id').val() as string) || '';
-        let idAtendimentoConvite = ($('#IdAtendimentoConvite').val() as string) || '';
-        let idAtendimentoAcionamento = ($('#IdAtendimentoAcionamento').val() as string) || '';
-        let idAdesao = ($('#IdAdesao').val() as string) || '';
-        let idCidadeAtendimento = ($('#IdCidadeAtendimento').val() as string) || '';
-        let distanciaBaseOrigem = ($('#DistanciaBaseOrigem').val() as string) || '0';
-
-        // Fallback: Tenta extrair a variável `const json = {...}` da tag <script> caso os inputs HTML estejam vazios
-        if (!id || !idAtendimentoConvite) {
-          $('script').each((_, element) => {
-            const scriptText = $(element).html() || '';
-            if (scriptText.includes('const json =')) {
-              try {
-                const match = scriptText.match(/const json = ({.*?});/s);
-                if (match && match[1]) {
-                  const parsedJson = JSON.parse(match[1]);
-                  if (parsedJson.Id) id = String(parsedJson.Id);
-                  if (parsedJson.IdAtendimentoConvite) idAtendimentoConvite = String(parsedJson.IdAtendimentoConvite);
-                  if (parsedJson.IdAtendimentoAcionamento) idAtendimentoAcionamento = String(parsedJson.IdAtendimentoAcionamento);
-                  if (parsedJson.IdAdesao) idAdesao = String(parsedJson.IdAdesao);
-                  if (parsedJson.IdCidadeAtendimento) idCidadeAtendimento = String(parsedJson.IdCidadeAtendimento);
-                  if (parsedJson.DistanciaBaseOrigem) distanciaBaseOrigem = String(parsedJson.DistanciaBaseOrigem);
-                }
-              } catch (jsonErr) {
-                // Ignore JSON parse errors in script tag fallback
-              }
-            }
-          });
+        if (bodyText.includes('Convite expirado') || bodyText.includes('Convite encerrado') || bodyText.includes('Convite cancelado')) {
+          throw new NonRetryableError(`Convite indisponível no Velox (${pageTitle}): ${bodyText.slice(0, 150)}`);
+        }
+        if (bodyText.includes('Login') && (bodyText.includes('Senha') || bodyText.includes('Entrar'))) {
+          throw new NonRetryableError(`Página de convite redirecionou para Login do Velox (Autenticação exigida). Título: ${pageTitle}`);
         }
 
+        // -------------------------------------------------------------
+        // ETAPA 3: EXTRAÇÃO MULTI-ESTRATÉGIA DE CAMPOS DO FORMULÁRIO
+        // -------------------------------------------------------------
+        debugInfo.failedStep = 'FORM_EXTRACTION';
+
+        const allInputs: Record<string, string> = {};
+        $('input').each((_, el) => {
+          const key = $(el).attr('name') || $(el).attr('id');
+          const val = $(el).val();
+          if (key) {
+            allInputs[key] = String(val ?? '');
+          }
+        });
+        debugInfo.allInputsFound = allInputs;
+
+        // Função auxiliar para busca insensível a maiúsculas/minúsculas
+        const getValue = (candidateKeys: string[]): string => {
+          for (const key of candidateKeys) {
+            if (allInputs[key] !== undefined && allInputs[key] !== '') {
+              return allInputs[key];
+            }
+            // Busca por chave case-insensitive
+            const foundKey = Object.keys(allInputs).find(
+              (k) => k.toLowerCase() === key.toLowerCase()
+            );
+            if (foundKey && allInputs[foundKey] !== undefined && allInputs[foundKey] !== '') {
+              return allInputs[foundKey];
+            }
+          }
+          return '';
+        };
+
+        let id = getValue(['Id', 'id']);
+        let idAtendimentoConvite = getValue(['IdAtendimentoConvite', 'idAtendimentoConvite', 'id_atendimento_convite']);
+        let idAtendimentoAcionamento = getValue(['IdAtendimentoAcionamento', 'idAtendimentoAcionamento']);
+        let idAdesao = getValue(['IdAdesao', 'idAdesao']);
+        let idCidadeAtendimento = getValue(['IdCidadeAtendimento', 'idCidadeAtendimento']);
+        let distanciaBaseOrigem = getValue(['DistanciaBaseOrigem', 'distanciaBaseOrigem']) || '0';
+
+        // Estratégia B: Extração via scripts JS (const json = {...})
+        let scriptJson: Record<string, any> | null = null;
+        $('script').each((_, element) => {
+          const scriptText = $(element).html() || '';
+          if (scriptText.includes('const json =') || scriptText.includes('var json =') || scriptText.includes('IdAtendimentoConvite')) {
+            try {
+              const match = scriptText.match(/(?:const|var|let)\s+json\s*=\s*({.*?});/s);
+              if (match && match[1]) {
+                const parsed = JSON.parse(match[1]);
+                scriptJson = parsed;
+                if (!id && parsed.Id) id = String(parsed.Id);
+                if (!idAtendimentoConvite && parsed.IdAtendimentoConvite) idAtendimentoConvite = String(parsed.IdAtendimentoConvite);
+                if (!idAtendimentoAcionamento && parsed.IdAtendimentoAcionamento) idAtendimentoAcionamento = String(parsed.IdAtendimentoAcionamento);
+                if (!idAdesao && parsed.IdAdesao) idAdesao = String(parsed.IdAdesao);
+                if (!idCidadeAtendimento && parsed.IdCidadeAtendimento) idCidadeAtendimento = String(parsed.IdCidadeAtendimento);
+                if ((!distanciaBaseOrigem || distanciaBaseOrigem === '0') && parsed.DistanciaBaseOrigem) {
+                  distanciaBaseOrigem = String(parsed.DistanciaBaseOrigem);
+                }
+              }
+            } catch {
+              // Ignore
+            }
+          }
+        });
+        debugInfo.scriptJsonFound = scriptJson;
+
+        // Estratégia C: Extrair parâmetro da URL do convite como fallback final
+        try {
+          const parsedUrl = new URL(url);
+          const chaveQuery = parsedUrl.searchParams.get('ChaveConvite');
+          if (!idAtendimentoConvite && chaveQuery) {
+            idAtendimentoConvite = chaveQuery;
+          }
+        } catch {
+          // Ignore URL parse error
+        }
+
+        // Validação estrita
         if (!id || !idAtendimentoConvite) {
           if ($('.text-danger').length > 0) {
             const dangerMsg = $('.text-danger').text().trim();
-            if (dangerMsg) throw new NonRetryableError(`Velox: ${dangerMsg}`);
+            if (dangerMsg) throw new NonRetryableError(`Alerta Velox no HTML: "${dangerMsg}"`);
           }
-          throw new Error('Falha ao extrair ID do convite ou formulário Inválido (Convite pode ter sido encerrado).');
+
+          const keysFoundStr = Object.keys(allInputs).join(', ') || 'Nenhum input encontrado';
+          throw new Error(
+            `Falha na extração de formulário do convite! (Id: "${id}", IdAtendimentoConvite: "${idAtendimentoConvite}"). ` +
+            `Título da Página: "${pageTitle}". Inputs encontrados: [${keysFoundStr}]. Snippet do corpo: "${bodyText.slice(0, 200)}"`
+          );
         }
 
-        // Determinar URL de acionamento do formulário (resolvendo URL relativa)
-        const actionAttr = $('#VisualizarConvite').attr('action');
+        // Determinar URL de ação do POST
+        const actionAttr = $('#VisualizarConvite').attr('action') || $('form').attr('action');
         let actionUrl = url;
         if (actionAttr) {
           actionUrl = new URL(actionAttr, url).href;
         }
+        debugInfo.formAction = actionUrl;
 
-        // 3. Cálculo do valor da Prévia
+        // -------------------------------------------------------------
+        // ETAPA 4: CÁLCULO E POST DE ACEITE
+        // -------------------------------------------------------------
+        debugInfo.failedStep = 'HTTP_POST';
+
         const distanciaNum = parseInt(distanciaBaseOrigem.replace(/\D/g, ''), 10) || 0;
         const valorPrevia = calcularPrevia(distanciaNum);
 
-        // 4. Montagem do payload estritamente tipado
         const payload: AcceptPayload = {
           Id: id,
           IdAtendimentoConvite: idAtendimentoConvite,
@@ -123,12 +231,21 @@ export class VeloxScraper {
           IdCidadeAtendimento: idCidadeAtendimento,
         };
 
-        // 5. POST de aceite imediato em milissegundos
-        const responsePost = await this.http.post(actionUrl, payload);
+        const responsePost = await this.http.post(actionUrl, payload, {
+          headers: {
+            'Content-Type': 'application/json',
+            'Referer': url,
+            'Origin': new URL(url).origin,
+          },
+        });
+
+        debugInfo.postStatusCode = responsePost.status;
         const durationMs = Date.now() - startTime;
 
+        const isSuccess = responsePost.status >= 200 && responsePost.status < 300;
+
         return {
-          success: responsePost.status >= 200 && responsePost.status < 300,
+          success: isSuccess,
           durationMs,
           statusCode: responsePost.status,
           url,
@@ -138,22 +255,23 @@ export class VeloxScraper {
           responsePayload: {
             status: responsePost.status,
             statusText: responsePost.statusText,
+            headers: responsePost.headers,
             data: responsePost.data,
           },
           attemptsMade,
+          debugInfo,
         };
       } catch (error: any) {
         lastError = error;
+        debugInfo.errorStack = error.stack;
 
-        // Se o erro não for passível de retry (ex: convite já aceito por outro prestador), aborta imediatamente!
         if (error instanceof NonRetryableError || (error.message && error.message.includes('já aceito'))) {
-          console.log(`[Scraper] Convite indisponível/já aceito. Encerrando sem retry: ${error.message}`);
+          console.log(`[Scraper] Convite encerrado/não aceitável. Sem retry: ${error.message}`);
           break;
         }
 
-        // Se ainda houver tentativas restantes para erros temporários de rede/timeout, aguarda 300ms e tenta novamente
         if (attempt < maxAttempts) {
-          console.warn(`[Scraper] Erro temporário no aceite (${error.message}). Re-tentando em 300ms...`);
+          console.warn(`[Scraper] Erro temporário na tentativa ${attempt} (${error.message}). Tentando novamente em 300ms...`);
           await new Promise((r) => setTimeout(r, 300));
         }
       }
@@ -166,6 +284,7 @@ export class VeloxScraper {
       url,
       errorMessage: lastError?.message || 'Erro desconhecido ao processar convite',
       attemptsMade,
+      debugInfo,
     };
   }
 }

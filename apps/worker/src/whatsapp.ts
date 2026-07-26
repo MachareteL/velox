@@ -247,6 +247,13 @@ export class WhatsAppWorker {
             const result = await this.scraper.processarConvite(targetUrl);
             const previaMinutos = calcularPrevia(result.distanciaKm);
 
+            const responsePayloadToRecord = {
+              ...(result.responsePayload || {}),
+              debugInfo: result.debugInfo || null,
+              attemptsMade: result.attemptsMade,
+              payloadSent: result.payload || null,
+            };
+
             await recordCapturedCall(this.supabase, {
               tenant_id: this.tenantId,
               url: result.url,
@@ -256,7 +263,7 @@ export class WhatsAppWorker {
               vehicle_id: availableVehicle?.id || null,
               duration_ms: result.durationMs,
               status: result.success ? 'SUCCESS' : 'FAILED',
-              response_payload: result.responsePayload || null,
+              response_payload: responsePayloadToRecord,
               error_message: result.errorMessage || null,
             });
 
@@ -266,8 +273,14 @@ export class WhatsAppWorker {
               event_type: result.success ? 'HTTP_POST_SUCCESS' : 'HTTP_POST_ERROR',
               message: result.success
                 ? `Convite aceito com sucesso em ${result.durationMs}ms${availableVehicle ? ` | Veículo: ${availableVehicle.title}` : ''}.`
-                : `Tentativa de aceite: ${result.errorMessage}`,
-              details: { url: targetUrl, durationMs: result.durationMs, vehicleId: availableVehicle?.id },
+                : `Falha no aceite do convite: ${result.errorMessage}`,
+              details: {
+                url: targetUrl,
+                durationMs: result.durationMs,
+                vehicleId: availableVehicle?.id,
+                statusCode: result.statusCode,
+                debugInfo: result.debugInfo,
+              },
             });
           });
         } catch (err: any) {
