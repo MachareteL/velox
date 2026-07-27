@@ -25,6 +25,7 @@ export class WhatsAppWorker {
   private scraper: VeloxScraper;
   private inviteRegex: RegExp;
   private isActive: boolean = true;
+  private running: boolean = false;
 
   // Controle Anti-Spam de QR Code e Recursos da VM
   private qrCount: number = 0;
@@ -93,10 +94,21 @@ export class WhatsAppWorker {
     return this.phoneNumber;
   }
 
+  public isRunning(): boolean {
+    return this.running;
+  }
+
   public async requestPairingCodeOnDemand(phoneNumber: string): Promise<string | null> {
     const cleanPhone = phoneNumber.replace(/\D/g, '');
     this.phoneNumber = cleanPhone;
     this.qrCount = 0;
+
+    if (!this.running) {
+      console.log(`[Worker] Robô estava pausado/parado. Reiniciando cliente para tenant ${this.tenantId}...`);
+      await this.start();
+      return null;
+    }
+
     try {
       console.log(`[Worker] Solicitando Código de Pareamento sob demanda para número ${cleanPhone}...`);
       const pairingCode = await (this.client as any).requestPairingCode(cleanPhone);
@@ -123,6 +135,16 @@ export class WhatsAppWorker {
       return pairingCode;
     } catch (pairErr: any) {
       console.error('[Worker] Erro ao solicitar Código de Pareamento sob demanda:', pairErr.message);
+
+      // Se o quadro do Chromium foi corrompido/desconectado (detached Frame), recarrega o cliente do WhatsApp
+      try {
+        console.warn(`[Worker] Recarregando navegador do tenant ${this.tenantId} para restaurar quadro Chromium...`);
+        this.qrCount = 0;
+        await this.stop();
+        await this.start();
+      } catch (reinitErr: any) {
+        console.error('[Worker] Erro ao re-inicializar cliente WhatsApp:', reinitErr.message);
+      }
       return null;
     }
   }
@@ -427,10 +449,12 @@ export class WhatsAppWorker {
 
   public async start(): Promise<void> {
     console.log(`[Worker] Inicializando cliente WhatsApp para tenant ${this.tenantId}...`);
+    this.running = true;
     await this.client.initialize();
   }
 
   public async stop(): Promise<void> {
+    this.running = false;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     try {
       await this.client.destroy();

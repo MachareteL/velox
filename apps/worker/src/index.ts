@@ -22,12 +22,17 @@ async function main() {
 
   const startWorkerForTenant = async (tenantId: string, sessionId: string, isActive: boolean, phoneNumber?: string | null) => {
     let worker = activeWorkers.get(tenantId);
-    if (worker) {
+    if (worker && worker.isRunning()) {
       worker.setIsActive(isActive);
       if (phoneNumber && phoneNumber !== worker.getPhoneNumber()) {
         await worker.requestPairingCodeOnDemand(phoneNumber);
       }
       return;
+    }
+
+    if (worker && !worker.isRunning()) {
+      console.log(`[Orchestrator] Removendo instância inativa anterior do tenant ${tenantId}...`);
+      activeWorkers.delete(tenantId);
     }
 
     console.log(`[Orchestrator] Iniciando worker isolado para tenant ${tenantId} [Automação: ${isActive ? 'LIGADA' : 'PAUSADA'}]${phoneNumber ? ` [Telefone: ${phoneNumber}]` : ''}...`);
