@@ -20,6 +20,24 @@ function getWindowsChromePath(): string | null {
   return null;
 }
 
+function cleanUnauthenticatedSessionDir(tenantId: string): void {
+  try {
+    const authDataPath = process.env.WWEBJS_AUTH_PATH || path.resolve(process.cwd(), '.wwebjs_auth');
+    const sessionDir = path.join(authDataPath, `session-tenant_${tenantId}`);
+
+    if (fs.existsSync(sessionDir)) {
+      // Se não há arquivo de autenticação preservado, removemos os dados temporários de IndexedDB corrompidos
+      const hasSavedAuth = fs.existsSync(path.join(sessionDir, 'session')) || fs.existsSync(path.join(sessionDir, 'Default', 'Service Worker'));
+      if (!hasSavedAuth) {
+        console.log(`[Worker] Limpando dados de armazenamento temporários (IndexedDB) em: ${sessionDir}`);
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+      }
+    }
+  } catch (err: any) {
+    console.warn(`[Worker] Aviso ao limpar pasta temporária da sessão: ${err?.message}`);
+  }
+}
+
 export class WhatsAppWorker {
   private client: Client;
   private scraper: VeloxScraper;
@@ -50,6 +68,9 @@ export class WhatsAppWorker {
     this.inviteRegex = new RegExp(targetRegexPattern || process.env.TARGET_REGEX || defaultPattern, 'i');
     this.scraper = new VeloxScraper(parseInt(process.env.HTTP_TIMEOUT || '5000', 10));
 
+    // Limpa a pasta temporária de sessão caso ela contenha IndexedDB corrompido de tentativa frustrada
+    cleanUnauthenticatedSessionDir(tenantId);
+
     const puppeteerConfig: any = {
       headless: 'new',
       args: [
@@ -60,6 +81,8 @@ export class WhatsAppWorker {
         '--no-first-run',
         '--no-zygote',
         '--disable-gpu',
+        '--disable-session-crashed-bubble',
+        '--disable-infobars',
       ],
     };
 
