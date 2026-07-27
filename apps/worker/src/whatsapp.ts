@@ -98,13 +98,52 @@ export class WhatsAppWorker {
     return this.running;
   }
 
+  private async triggerPairingCodeUI(): Promise<void> {
+    try {
+      const page = (this.client as any).pupPage;
+      if (page && !page.isClosed()) {
+        await page.evaluate(() => {
+          // 1. Tenta injetar o módulo Webpack PairingCodeLinkUtils diretamente na memória da Store
+          if ((window as any).require) {
+            try {
+              const mod = (window as any).require('WAWebPairingCodeLinkUtils') || (window as any).require('PairingCodeLinkUtils');
+              if (mod && (window as any).Store) {
+                (window as any).Store.PairingCodeLinkUtils = mod;
+              }
+            } catch (e) {}
+          }
+          // 2. Se o botão visual "Conectar com número de telefone" existir no canvas, clica nele para forçar a montagem
+          const elements = Array.from(document.querySelectorAll('span, div, button'));
+          const linkBtn = elements.find((el) => {
+            const txt = el.textContent || '';
+            return (
+              txt.includes('Link with phone number') ||
+              txt.includes('Conectar com número de telefone') ||
+              txt.includes('Conectar com número') ||
+              txt.includes('número de telefone')
+            );
+          });
+          if (linkBtn) {
+            (linkBtn as HTMLElement).click();
+          }
+        });
+      }
+    } catch {
+      // Ignora erro de avaliação se a página estiver navegando
+    }
+  }
+
   private async executePairingCodeWithRetry(phoneNumber: string): Promise<string> {
     const cleanPhone = phoneNumber.replace(/\D/g, '');
 
-    // Loop de até 10 tentativas com intervalo de 1.2s aguardando a injeção completa dos módulos do WhatsApp Web no Chromium
+    // Força o WhatsApp Web a carregar o módulo PairingCodeLinkUtils e simula o clique no botão do canvas
+    await this.triggerPairingCodeUI();
+
+    // Loop de até 10 tentativas com intervalo de 1.2s aguardando a montagem do módulo no Chromium
     for (let attempt = 1; attempt <= 10; attempt++) {
       try {
         console.log(`[Worker Pairing] Solicitando Código de Pareamento (tentativa ${attempt}/10) para número ${cleanPhone}...`);
+        await this.triggerPairingCodeUI();
         const code = await (this.client as any).requestPairingCode(cleanPhone);
         if (code && typeof code === 'string' && code.length >= 6) {
           console.log(`[Worker Pairing] ✨ Código de Pareamento gerado com sucesso na tentativa ${attempt}: ${code}`);
