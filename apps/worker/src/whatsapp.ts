@@ -99,24 +99,39 @@ export class WhatsAppWorker {
   }
 
   private async executePairingCodeWithRetry(phoneNumber: string): Promise<string> {
-    const cleanPhone = phoneNumber.replace(/\D/g, '');
+    const rawPhone = phoneNumber.replace(/\D/g, '');
+
+    // Monta a lista de formatos (nacional sem 55 e internacional com 55)
+    const formatsToTry: string[] = [];
+    if (rawPhone.length === 11) {
+      formatsToTry.push(rawPhone); // ex: 19983648849
+      formatsToTry.push(`55${rawPhone}`); // ex: 5519983648849
+    } else if (rawPhone.startsWith('55') && rawPhone.length === 13) {
+      formatsToTry.push(rawPhone); // ex: 5519983648849
+      formatsToTry.push(rawPhone.slice(2)); // ex: 19983648849
+    } else {
+      formatsToTry.push(rawPhone);
+      if (!rawPhone.startsWith('55')) formatsToTry.push(`55${rawPhone}`);
+    }
 
     // Aguarda 1.5s inicial para o WhatsApp Web estabilizar a página no Chromium
     await new Promise((resolve) => setTimeout(resolve, 1500));
 
-    for (let attempt = 1; attempt <= 6; attempt++) {
-      try {
-        console.log(`[Worker Pairing] Solicitando Código de Pareamento (tentativa ${attempt}/6) para número ${cleanPhone}...`);
-        const code = await (this.client as any).requestPairingCode(cleanPhone);
-        if (code && typeof code === 'string' && code.length >= 6) {
-          console.log(`[Worker Pairing] ✨ Código de Pareamento gerado com sucesso na tentativa ${attempt}: ${code}`);
-          return code;
+    for (const phoneCandidate of formatsToTry) {
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        try {
+          console.log(`[Worker Pairing] Solicitando Código de Pareamento (formato: ${phoneCandidate}, tentativa ${attempt}/4)...`);
+          const code = await (this.client as any).requestPairingCode(phoneCandidate);
+          if (code && typeof code === 'string' && code.length >= 6) {
+            console.log(`[Worker Pairing] ✨ Código de Pareamento gerado com sucesso (${phoneCandidate}): ${code}`);
+            return code;
+          }
+        } catch (err: any) {
+          const errMsg = err?.message || String(err || 't');
+          console.warn(`[Worker Pairing] Formato ${phoneCandidate} tentativa ${attempt}/4 (${errMsg}). Aguardando 1.5s...`);
         }
-      } catch (err: any) {
-        const errMsg = err?.message || String(err || 't');
-        console.warn(`[Worker Pairing] Tentativa ${attempt}/6 (${errMsg}). Aguardando 2s para estabilização do WhatsApp...`);
+        await new Promise((resolve) => setTimeout(resolve, 1500));
       }
-      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
 
     throw new Error('Não foi possível gerar o código por telefone no momento. Tente novamente em instantes.');
