@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { X, QrCode, RefreshCw, CheckCircle2, AlertTriangle, Loader2, Phone, Copy, Check } from 'lucide-react';
+import { X, QrCode, RefreshCw, CheckCircle2, AlertTriangle, Loader2, Phone, Copy, Check, RotateCcw } from 'lucide-react';
 import type { WhatsAppSessionStatus } from '@velox/types';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth-context';
@@ -24,14 +24,17 @@ export function QRModal({ isOpen, onClose, status, qrCode, pairingCode, phoneNum
   const [copied, setCopied] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-
+  React.useEffect(() => {
+    if (phoneNumber || pairingCode) {
+      setConnectMethod('PHONE');
+    }
+  }, [phoneNumber, pairingCode]);
 
   // Formatação com Máscara +55 (XX) XXXXX-XXXX
   const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     let digits = e.target.value.replace(/\D/g, '');
     if (digits.length > 13) digits = digits.slice(0, 13);
 
-    // Se o usuário não digitou DDI 55 no início, adiciona automaticamente
     if (digits.length > 0 && !digits.startsWith('55')) {
       digits = '55' + digits;
     }
@@ -53,13 +56,14 @@ export function QRModal({ isOpen, onClose, status, qrCode, pairingCode, phoneNum
     setInputPhone(formatted);
   };
 
-  const handleRequestQR = async () => {
+  const handleResetSession = async () => {
     if (!user) return;
     setLoading(true);
     setErrorMessage(null);
+    setInputPhone('');
 
     try {
-      const { error } = await supabase
+      await supabase
         .from('whatsapp_sessions')
         .upsert(
           {
@@ -71,14 +75,10 @@ export function QRModal({ isOpen, onClose, status, qrCode, pairingCode, phoneNum
             updated_at: new Date().toISOString(),
           },
           { onConflict: 'tenant_id' }
-        )
-        .select('*');
-
-      if (error) {
-        setErrorMessage('Não foi possível solicitar o QR Code no momento. Tente novamente.');
-      }
+        );
+      setConnectMethod('QR');
     } catch {
-      setErrorMessage('Falha ao conectar com o servidor. Tente novamente.');
+      setErrorMessage('Falha ao reiniciar a sessão no servidor. Tente novamente.');
     } finally {
       setLoading(false);
     }
@@ -115,12 +115,6 @@ export function QRModal({ isOpen, onClose, status, qrCode, pairingCode, phoneNum
     setCopied(true);
     setTimeout(() => setCopied(false), 2500);
   };
-
-  React.useEffect(() => {
-    if (phoneNumber || pairingCode) {
-      setConnectMethod('PHONE');
-    }
-  }, [phoneNumber, pairingCode]);
 
   const formattedPairingCode = pairingCode
     ? pairingCode.length === 8
@@ -230,9 +224,15 @@ export function QRModal({ isOpen, onClose, status, qrCode, pairingCode, phoneNum
                 <h4 className="text-base font-bold text-white mb-1">
                   Gerando QR Code...
                 </h4>
-                <p className="text-xs text-gray-400 max-w-[260px] leading-relaxed">
+                <p className="text-xs text-gray-400 max-w-[260px] leading-relaxed mb-4">
                   Iniciando a sessão do WhatsApp. Isso pode levar alguns segundos.
                 </p>
+                <button
+                  onClick={handleResetSession}
+                  className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs flex items-center gap-1.5 transition-all"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" /> Reiniciar Solicitação
+                </button>
               </div>
             ) : (
               <div className="text-center py-8">
@@ -279,9 +279,15 @@ export function QRModal({ isOpen, onClose, status, qrCode, pairingCode, phoneNum
                 <h4 className="text-base font-bold text-white mb-1">
                   Solicitando Código ao WhatsApp...
                 </h4>
-                <p className="text-xs text-gray-400 max-w-[260px] leading-relaxed">
+                <p className="text-xs text-gray-400 max-w-[260px] leading-relaxed mb-4">
                   Gerando o código de pareamento de 8 dígitos para o seu número.
                 </p>
+                <button
+                  onClick={handleResetSession}
+                  className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs flex items-center gap-1.5 transition-all"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" /> Reiniciar Solicitação
+                </button>
               </div>
             ) : (
               <form onSubmit={handleRequestPairingCode} className="w-full">
@@ -309,7 +315,7 @@ export function QRModal({ isOpen, onClose, status, qrCode, pairingCode, phoneNum
           )}
         </div>
 
-        {/* Instruções Passo a Passo */}
+        {/* Instruções Passo a Passo & Botão de Forçar Novo Código */}
         {status !== 'CONNECTED' && (
           <div className="mt-5 pt-4 border-t border-gray-800/80">
             {connectMethod === 'QR' ? (
@@ -330,12 +336,11 @@ export function QRModal({ isOpen, onClose, status, qrCode, pairingCode, phoneNum
                 </div>
 
                 <button
-                  onClick={handleRequestQR}
-                  disabled={isGenerating}
-                  className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-bold text-sm shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02] active:scale-[0.98]"
+                  onClick={handleResetSession}
+                  className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-bold text-sm shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 transition-all hover:scale-[1.02] active:scale-[0.98]"
                 >
-                  <RefreshCw className={`w-4 h-4 ${isGenerating ? 'animate-spin' : ''}`} />
-                  {isGenerating ? 'Aguarde, gerando...' : 'Gerar Novo QR Code'}
+                  <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                  Gerar Novo QR Code / Reiniciar
                 </button>
               </>
             ) : (
@@ -354,6 +359,14 @@ export function QRModal({ isOpen, onClose, status, qrCode, pairingCode, phoneNum
                     Digite o código de 8 dígitos
                   </div>
                 </div>
+
+                <button
+                  onClick={handleResetSession}
+                  className="w-full py-2.5 px-4 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-300 font-semibold text-xs flex items-center justify-center gap-2 transition-all mt-2"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 text-gray-400" />
+                  Voltar ao QR Code / Trocar Número
+                </button>
               </div>
             )}
           </div>
