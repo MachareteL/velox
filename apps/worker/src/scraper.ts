@@ -15,6 +15,12 @@ export interface ScraperDebugInfo {
   allInputsFound?: Record<string, string>;
   scriptJsonFound?: Record<string, unknown> | null;
   errorStack?: string;
+  timingMs?: {
+    getMs: number;
+    parseMs: number;
+    postMs: number;
+    totalMs: number;
+  };
 }
 
 export interface ScraperResult {
@@ -45,7 +51,7 @@ export class VeloxScraper {
     this.http = axios.create({
       timeout: timeoutMs,
       maxRedirects: 5,
-      validateStatus: () => true, // Permite capturar respostas como 302, 400, 404 sem estourar exceção imediatamente
+      validateStatus: () => true, // Captura 200, 302, 400, 404 sem lançar exceção imediata
       headers: {
         'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -58,7 +64,7 @@ export class VeloxScraper {
   }
 
   /**
-   * Processa a URL de convite do Velox realizando o GET e POST em ms com Diagnóstico Detalhado
+   * Processa a URL de convite do Velox realizando GET e POST com cronometragem em milissegundos por etapa
    */
   public async processarConvite(url: string, maxAttempts = 2): Promise<ScraperResult> {
     const startTime = Date.now();
@@ -70,41 +76,55 @@ export class VeloxScraper {
       attemptsMade = attempt;
       debugInfo = {};
 
+      let tGet = 0;
+      let tParse = 0;
+      let tPost = 0;
+
       try {
-        if (attempt > 1) {
-          console.log(`[Scraper] Tentativa ${attempt} de ${maxAttempts} para aceitar o convite: ${url}`);
-        }
+        console.log(`\n================================================================================`);
+        console.log(`[Scraper] 📥 [Tentativa ${attempt}/${maxAttempts}] Iniciando processamento do convite Velox`);
+        console.log(`[Scraper] 🔗 URL: ${url}`);
 
         // -------------------------------------------------------------
-        // ETAPA 1: GET na página de convite
+        // ETAPA 1: HTTP GET
         // -------------------------------------------------------------
         debugInfo.failedStep = 'HTTP_GET';
+        const startGet = Date.now();
+        console.log(`[Scraper] 🌐 [Etapa 1/3] Disparando HTTP GET para a página de convite...`);
+
         const responseGet = await this.http.get<string>(url);
-        
+        tGet = Date.now() - startGet;
+
+        const finalUrl = responseGet.request?.res?.responseUrl || url;
         debugInfo.getStatusCode = responseGet.status;
-        debugInfo.getFinalUrl = responseGet.request?.res?.responseUrl || url;
+        debugInfo.getFinalUrl = finalUrl;
+        
         const htmlData = typeof responseGet.data === 'string' ? responseGet.data : String(responseGet.data || '');
         debugInfo.rawHtmlSnippet = htmlData.slice(0, 1500);
 
+        console.log(`[Scraper] ⏱️ [Etapa 1/3 Concluída em ${tGet}ms] HTTP Status: ${responseGet.status} ${responseGet.statusText} | URL Final: ${finalUrl}`);
+
         if (responseGet.status < 200 || responseGet.status >= 300) {
           throw new Error(
-            `HTTP GET retornou status ${responseGet.status} (${responseGet.statusText}) ao acessar ${url}`
+            `HTTP GET retornou status de erro ${responseGet.status} (${responseGet.statusText}) ao acessar ${url}`
           );
         }
 
         // -------------------------------------------------------------
-        // ETAPA 2: PARSING HTML & DIAGNÓSTICO DO CORPO
+        // ETAPA 2: PARSING HTML & EXTRAÇÃO DE CAMPOS
         // -------------------------------------------------------------
         debugInfo.failedStep = 'HTML_PARSING';
-        const $ = cheerio.load(htmlData);
+        const startParse = Date.now();
+        console.log(`[Scraper] 🔍 [Etapa 2/3] Analisando estrutura HTML e buscando campos do formulário...`);
 
+        const $ = cheerio.load(htmlData);
         const pageTitle = $('title').text().trim() || 'Sem Título';
         debugInfo.pageTitle = pageTitle;
 
         const bodyText = $('body').text().replace(/\s+/g, ' ').trim();
         debugInfo.bodyTextSnippet = bodyText.slice(0, 600);
 
-        // Verificações de recusas conhecidas da Velox
+        // Verificação imediata de avisos/recusas na tela
         if (bodyText.includes('Convite já aceito por outro prestador')) {
           throw new NonRetryableError('Convite já aceito por outro prestador!');
         }
@@ -115,9 +135,6 @@ export class VeloxScraper {
           throw new NonRetryableError(`Página de convite redirecionou para Login do Velox (Autenticação exigida). Título: ${pageTitle}`);
         }
 
-        // -------------------------------------------------------------
-        // ETAPA 3: EXTRAÇÃO MULTI-ESTRATÉGIA DE CAMPOS DO FORMULÁRIO
-        // -------------------------------------------------------------
         debugInfo.failedStep = 'FORM_EXTRACTION';
 
         const allInputs: Record<string, string> = {};
@@ -130,13 +147,12 @@ export class VeloxScraper {
         });
         debugInfo.allInputsFound = allInputs;
 
-        // Função auxiliar para busca insensível a maiúsculas/minúsculas
+        // Busca insensível a maiúsculas/minúsculas
         const getValue = (candidateKeys: string[]): string => {
           for (const key of candidateKeys) {
             if (allInputs[key] !== undefined && allInputs[key] !== '') {
               return allInputs[key];
             }
-            // Busca por chave case-insensitive
             const foundKey = Object.keys(allInputs).find(
               (k) => k.toLowerCase() === key.toLowerCase()
             );
@@ -154,7 +170,7 @@ export class VeloxScraper {
         let idCidadeAtendimento = getValue(['IdCidadeAtendimento', 'idCidadeAtendimento']);
         let distanciaBaseOrigem = getValue(['DistanciaBaseOrigem', 'distanciaBaseOrigem']) || '0';
 
-        // Estratégia B: Extração via scripts JS (const json = {...})
+        // Extração via tags <script> (const json = {...})
         let scriptJson: Record<string, any> | null = null;
         $('script').each((_, element) => {
           const scriptText = $(element).html() || '';
@@ -180,16 +196,16 @@ export class VeloxScraper {
         });
         debugInfo.scriptJsonFound = scriptJson;
 
-        // Estratégia C: Extrair parâmetro ChaveConvite da URL do convite como fallback final
+        // Fallback de extração da ChaveConvite via URL Query String
         let chaveConvite = '';
         try {
           const parsedUrl = new URL(url);
           chaveConvite = parsedUrl.searchParams.get('ChaveConvite') || '';
         } catch {
-          // Ignore URL parse error
+          // Ignore
         }
 
-        // Validação: Exige Id numérico ou ChaveConvite da URL
+        // Validação: exige Id numérico ou ChaveConvite
         if (!id && !chaveConvite) {
           if ($('.text-danger').length > 0) {
             const dangerMsg = $('.text-danger').text().trim();
@@ -199,11 +215,11 @@ export class VeloxScraper {
           const keysFoundStr = Object.keys(allInputs).join(', ') || 'Nenhum input encontrado';
           throw new Error(
             `Falha na extração de ID/Chave do convite Velox! (Id: "${id}", Chave: "${chaveConvite}"). ` +
-            `Título da Página: "${pageTitle}". Inputs encontrados: [${keysFoundStr}]. Snippet do corpo: "${bodyText.slice(0, 200)}"`
+            `Título da Página: "${pageTitle}". Inputs encontrados: [${keysFoundStr}]`
           );
         }
 
-        // Determinar URL de ação do POST
+        // Determina URL de ação do POST
         const actionAttr = $('#VisualizarConvite').attr('action') || $('form').attr('action');
         let actionUrl = url;
         if (actionAttr) {
@@ -211,13 +227,22 @@ export class VeloxScraper {
         }
         debugInfo.formAction = actionUrl;
 
-        // -------------------------------------------------------------
-        // ETAPA 4: CÁLCULO E POST DE ACEITE
-        // -------------------------------------------------------------
-        debugInfo.failedStep = 'HTTP_POST';
+        tParse = Date.now() - startParse;
 
         const distanciaNum = parseInt(distanciaBaseOrigem.replace(/\D/g, ''), 10) || 0;
         const valorPrevia = calcularPrevia(distanciaNum);
+
+        console.log(`[Scraper] 📦 [Etapa 2/3 Concluída em ${tParse}ms] Dados do Convite Extraídos:`);
+        console.log(`          • ID Oferta: "${id}" | Chave URL: "${chaveConvite}"`);
+        console.log(`          • Distância Informada: ${distanciaNum} km`);
+        console.log(`          • Prévia Calculada: ${valorPrevia} min`);
+        console.log(`          • URL de Aceite (POST): ${actionUrl}`);
+
+        // -------------------------------------------------------------
+        // ETAPA 3: HTTP POST DE ACEITE
+        // -------------------------------------------------------------
+        debugInfo.failedStep = 'HTTP_POST';
+        const startPost = Date.now();
 
         const payload: AcceptPayload = {
           Id: id,
@@ -229,6 +254,8 @@ export class VeloxScraper {
           IdCidadeAtendimento: idCidadeAtendimento,
         };
 
+        console.log(`[Scraper] 🚀 [Etapa 3/3] Enviando HTTP POST de aceite com payload:`, JSON.stringify(payload));
+
         const responsePost = await this.http.post(actionUrl, payload, {
           headers: {
             'Content-Type': 'application/json',
@@ -237,14 +264,30 @@ export class VeloxScraper {
           },
         });
 
+        tPost = Date.now() - startPost;
         debugInfo.postStatusCode = responsePost.status;
-        const durationMs = Date.now() - startTime;
+        const totalMs = Date.now() - startTime;
+
+        debugInfo.timingMs = {
+          getMs: tGet,
+          parseMs: tParse,
+          postMs: tPost,
+          totalMs,
+        };
 
         const isSuccess = responsePost.status >= 200 && responsePost.status < 300;
 
+        console.log(`[Scraper] ⏱️ [Etapa 3/3 Concluída em ${tPost}ms] Resposta HTTP POST: Status ${responsePost.status} ${responsePost.statusText}`);
+        if (isSuccess) {
+          console.log(`[Scraper] 🎉 [SUCESSO TOTAL em ${totalMs}ms] CONVITE ACEITO COM SUCESSO! (GET: ${tGet}ms | Parse: ${tParse}ms | POST: ${tPost}ms)`);
+        } else {
+          console.warn(`[Scraper] ⚠️ HTTP POST retornou status de falha: ${responsePost.status}`);
+        }
+        console.log(`================================================================================\n`);
+
         return {
           success: isSuccess,
-          durationMs,
+          durationMs: totalMs,
           statusCode: responsePost.status,
           url,
           distanciaKm: distanciaNum,
@@ -262,16 +305,30 @@ export class VeloxScraper {
       } catch (error: any) {
         lastError = error;
         debugInfo.errorStack = error.stack;
+        const elapsedAttemptMs = Date.now() - startTime;
+
+        debugInfo.timingMs = {
+          getMs: tGet,
+          parseMs: tParse,
+          postMs: tPost,
+          totalMs: elapsedAttemptMs,
+        };
+
+        console.error(`[Scraper] ❌ [FALHA na Etapa: ${debugInfo.failedStep}] (${elapsedAttemptMs}ms decorridos)`);
+        console.error(`          • Mensagem: ${error.message}`);
+        if (debugInfo.pageTitle) console.error(`          • Título da Página: "${debugInfo.pageTitle}"`);
+        if (debugInfo.getStatusCode) console.error(`          • HTTP GET Status: ${debugInfo.getStatusCode}`);
 
         if (error instanceof NonRetryableError || (error.message && error.message.includes('já aceito'))) {
-          console.log(`[Scraper] Convite encerrado/não aceitável. Sem retry: ${error.message}`);
+          console.log(`[Scraper] 🛑 Convite encerrado/indisponível no Velox. Cancelando tentativas sem retry.`);
+          console.log(`================================================================================\n`);
           break;
         }
 
         if (attempt < maxAttempts) {
-          console.warn(`[Scraper] Erro temporário na tentativa ${attempt} (${error.message}). Tentando novamente em 300ms...`);
-          await new Promise((r) => setTimeout(r, 300));
+          console.warn(`[Scraper] 🔄 Erro temporário na tentativa ${attempt}. Aguardando 300ms para re-tentar...`);
         }
+        console.log(`================================================================================\n`);
       }
     }
 
