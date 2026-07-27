@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { X, QrCode, RefreshCw, CheckCircle2, AlertTriangle, Smartphone, ShieldCheck } from 'lucide-react';
+import { X, QrCode, RefreshCw, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react';
 import type { WhatsAppSessionStatus } from '@velox/types';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth-context';
@@ -26,7 +26,7 @@ export function QRModal({ isOpen, onClose, status, qrCode }: QRModalProps) {
     setErrorMessage(null);
 
     try {
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from('whatsapp_sessions')
         .upsert(
           {
@@ -48,6 +48,8 @@ export function QRModal({ isOpen, onClose, status, qrCode }: QRModalProps) {
       setLoading(false);
     }
   };
+
+  const isGenerating = loading || (status === 'DISCONNECTED_NEED_QR' && !qrCode);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
@@ -99,6 +101,19 @@ export function QRModal({ isOpen, onClose, status, qrCode }: QRModalProps) {
                 <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-400" /> Código pronto. Escaneie agora!
               </p>
             </div>
+          ) : isGenerating ? (
+            <div className="text-center py-8 flex flex-col items-center justify-center">
+              <div className="relative mb-4 flex items-center justify-center">
+                <div className="w-14 h-14 rounded-full border-4 border-emerald-500/20 border-t-emerald-500 animate-spin" />
+                <Loader2 className="w-6 h-6 text-emerald-400 absolute animate-spin" />
+              </div>
+              <h4 className="text-base font-bold text-white mb-1">
+                Aguarde, seu QR code está sendo gerado...
+              </h4>
+              <p className="text-xs text-gray-400 max-w-[260px] leading-relaxed">
+                Iniciando a sessão do WhatsApp. Isso pode levar alguns segundos.
+              </p>
+            </div>
           ) : (
             <div className="text-center py-8">
               <AlertTriangle className="w-10 h-10 text-amber-400 mx-auto mb-3" />
@@ -130,11 +145,11 @@ export function QRModal({ isOpen, onClose, status, qrCode }: QRModalProps) {
 
             <button
               onClick={handleRequestQR}
-              disabled={loading}
-              className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-bold text-sm shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 transition-all disabled:opacity-50 hover:scale-[1.02] active:scale-[0.98]"
+              disabled={isGenerating}
+              className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-bold text-sm shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02] active:scale-[0.98]"
             >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-              {loading ? 'Gerando Código...' : 'Gerar Novo QR Code'}
+              <RefreshCw className={`w-4 h-4 ${isGenerating ? 'animate-spin' : ''}`} />
+              {isGenerating ? 'Aguarde, seu QR code está sendo gerado...' : 'Gerar Novo QR Code'}
             </button>
           </div>
         )}
