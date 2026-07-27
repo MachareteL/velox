@@ -125,7 +125,7 @@ export function QRModal({ isOpen, onClose, status, qrCode, pairingCode, phoneNum
   const isGenerating =
     loading ||
     (status === 'DISCONNECTED_NEED_QR' && connectMethod === 'QR' && !qrCode) ||
-    (connectMethod === 'PHONE' && !pairingCode && (Boolean(phoneNumber) || Boolean(inputPhone)));
+    (connectMethod === 'PHONE' && !pairingCode && Boolean(phoneNumber));
 
   if (!isOpen) return null;
 
