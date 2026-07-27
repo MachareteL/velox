@@ -20,17 +20,31 @@ function getWindowsChromePath(): string | null {
   return null;
 }
 
+function purgeSessionDir(tenantId: string): void {
+  try {
+    const authDataPath = process.env.WWEBJS_AUTH_PATH || path.resolve(process.cwd(), '.wwebjs_auth');
+    const sessionDir = path.join(authDataPath, `session-tenant_${tenantId}`);
+
+    if (fs.existsSync(sessionDir)) {
+      console.log(`[Worker] Expurgando diretório de sessão desautorizada/desconectada: ${sessionDir}`);
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  } catch (err: any) {
+    console.warn(`[Worker] Erro ao expurgar pasta de sessão: ${err?.message}`);
+  }
+}
+
 function cleanUnauthenticatedSessionDir(tenantId: string): void {
   try {
     const authDataPath = process.env.WWEBJS_AUTH_PATH || path.resolve(process.cwd(), '.wwebjs_auth');
     const sessionDir = path.join(authDataPath, `session-tenant_${tenantId}`);
 
     if (fs.existsSync(sessionDir)) {
-      // Se não há arquivo de autenticação preservado, removemos os dados temporários de IndexedDB corrompidos
-      const hasSavedAuth = fs.existsSync(path.join(sessionDir, 'session')) || fs.existsSync(path.join(sessionDir, 'Default', 'Service Worker'));
+      // Se não há pasta de sessão autenticada preservada (session), removemos os dados temporários corrompidos
+      const hasSavedAuth = fs.existsSync(path.join(sessionDir, 'session'));
       if (!hasSavedAuth) {
         console.log(`[Worker] Limpando dados de armazenamento temporários (IndexedDB) em: ${sessionDir}`);
-        fs.rmSync(sessionDir, { recursive: true, force: true });
+        purgeSessionDir(tenantId);
       }
     }
   } catch (err: any) {
@@ -99,6 +113,10 @@ export class WhatsAppWorker {
         clientId: `tenant_${tenantId}`,
         dataPath: authDataPath,
       }),
+      webVersionCache: {
+        type: 'remote',
+        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html',
+      },
       puppeteer: puppeteerConfig,
     });
 
@@ -111,6 +129,15 @@ export class WhatsAppWorker {
     if (previous !== active) {
       console.log(`[Worker] Estado da automação alterado para tenant ${this.tenantId}: ${active ? 'LIGADO' : 'PAUSADO'}`);
     }
+  }
+
+  public async restartForFreshAuth(phoneNumber?: string | null): Promise<void> {
+    console.log(`[Worker] Forçando reinicialização limpa de autenticação para tenant ${this.tenantId}...`);
+    this.phoneNumber = phoneNumber !== undefined ? phoneNumber : this.phoneNumber;
+    this.qrCount = 0;
+    await this.stop();
+    purgeSessionDir(this.tenantId);
+    await this.start();
   }
 
   public getPhoneNumber(): string | null | undefined {
@@ -200,9 +227,10 @@ export class WhatsAppWorker {
       console.error('[Worker] Erro ao solicitar Código de Pareamento sob demanda:', errMsg);
 
       try {
-        console.warn(`[Worker] Recarregando navegador do tenant ${this.tenantId} para restaurar quadro Chromium...`);
+        console.warn(`[Worker] Recarregando navegador e limpando sessão desautorizada do tenant ${this.tenantId} para restaurar quadro Chromium...`);
         this.qrCount = 0;
         await this.stop();
+        purgeSessionDir(this.tenantId);
         await this.start();
       } catch (reinitErr: any) {
         console.error('[Worker] Erro ao re-inicializar cliente WhatsApp:', reinitErr.message);
@@ -352,9 +380,13 @@ export class WhatsAppWorker {
       }
       this.lastReconnectTime = now;
 
-      // APENAS se o usuário fez LOGOUT explícito no celular desvinculamos a sessão no Supabase
+      // Se ocorreu logout explícito ou expiração de token no WhatsApp Web
       if (reason === 'LOGOUT') {
-        console.warn(`[Worker] Logout explícito no celular detectado para tenant ${this.tenantId}. Marcando como necessário novo QR code.`);
+        console.warn(`[Worker] Logout explícito no celular detectado para tenant ${this.tenantId}. Expurgando pasta corrompida e reiniciando robô em estado limpo...`);
+        this.qrCount = 0;
+        await this.stop();
+        purgeSessionDir(this.tenantId);
+
         await updateSessionStatus(
           this.supabase,
           this.sessionId,
@@ -369,8 +401,14 @@ export class WhatsAppWorker {
           tenant_id: this.tenantId,
           level: 'WARN',
           event_type: 'SESSION_LOGOUT',
-          message: 'Sessão desconectada via WhatsApp (Logout). É necessário escaneamento.',
+          message: 'Sessão desconectada via WhatsApp (Logout). Pasta de sessão expurgada com sucesso.',
         });
+
+        try {
+          await this.start();
+        } catch (restartErr: any) {
+          console.error('[Worker] Erro ao reiniciar worker após logout:', restartErr?.message);
+        }
         return;
       }
 

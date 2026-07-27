@@ -107,6 +107,19 @@ async function main() {
         }
 
         if (session.status === 'DISCONNECTED_NEED_QR' || session.status === 'CONNECTED' || session.status === 'DISCONNECTED') {
+          const existingWorker = activeWorkers.get(session.tenant_id);
+          if (
+            existingWorker &&
+            session.status === 'DISCONNECTED_NEED_QR' &&
+            session.qr_code === null &&
+            session.pairing_code === null &&
+            !session.phone_number
+          ) {
+            console.log(`[Orchestrator] Redefinição de sessão solicitada para tenant ${session.tenant_id}. Reiniciando worker do zero...`);
+            await existingWorker.restartForFreshAuth(session.phone_number);
+            return;
+          }
+
           await startWorkerForTenant(session.tenant_id, session.id, true, session.phone_number);
         }
       }
