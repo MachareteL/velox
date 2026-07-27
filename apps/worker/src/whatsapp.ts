@@ -118,9 +118,9 @@ export class WhatsAppWorker {
     await new Promise((resolve) => setTimeout(resolve, 1500));
 
     for (const phoneCandidate of formatsToTry) {
-      for (let attempt = 1; attempt <= 4; attempt++) {
+      for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-          console.log(`[Worker Pairing] Solicitando Código de Pareamento (formato: ${phoneCandidate}, tentativa ${attempt}/4)...`);
+          console.log(`[Worker Pairing] Solicitando Código de Pareamento (formato: ${phoneCandidate}, tentativa ${attempt}/3)...`);
           const code = await (this.client as any).requestPairingCode(phoneCandidate);
           if (code && typeof code === 'string' && code.length >= 6) {
             console.log(`[Worker Pairing] ✨ Código de Pareamento gerado com sucesso (${phoneCandidate}): ${code}`);
@@ -128,9 +128,9 @@ export class WhatsAppWorker {
           }
         } catch (err: any) {
           const errMsg = err?.message || String(err || 't');
-          console.warn(`[Worker Pairing] Formato ${phoneCandidate} tentativa ${attempt}/4 (${errMsg}). Aguardando 1.5s...`);
+          console.warn(`[Worker Pairing] Formato ${phoneCandidate} tentativa ${attempt}/3 (${errMsg}). Aguardando 2s...`);
         }
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await new Promise((resolve) => setTimeout(resolve, 2000));
       }
     }
 
