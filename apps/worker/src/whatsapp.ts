@@ -98,13 +98,36 @@ export class WhatsAppWorker {
     return this.running;
   }
 
+  private async waitForStorePairingCode(): Promise<boolean> {
+    console.log(`[Worker Pairing] Aguardando o módulo Store.PairingCode do WhatsApp Web inicializar no navegador...`);
+    for (let attempt = 1; attempt <= 15; attempt++) {
+      try {
+        const page = (this.client as any).pupPage;
+        if (page && !page.isClosed()) {
+          const isReady = await page.evaluate(() => {
+            return typeof (window as any).Store?.PairingCode?.requestPairingCode === 'function';
+          });
+          if (isReady) {
+            console.log(`[Worker Pairing] Módulo Store.PairingCode pronto no navegador após ${attempt * 800}ms.`);
+            return true;
+          }
+        }
+      } catch {
+        // Ignora erros de avaliação enquanto o React do WhatsApp Web ainda está montando os módulos
+      }
+      await new Promise((resolve) => setTimeout(resolve, 800));
+    }
+    console.warn(`[Worker Pairing] Tempo limite de carregamento do Store.PairingCode atingido. Prosseguindo com a tentativa...`);
+    return false;
+  }
+
   private async executePairingCodeWithRetry(phoneNumber: string): Promise<string> {
     const cleanPhone = phoneNumber.replace(/\D/g, '');
 
-    // Aguarda 800ms para o Store.PairingCode do WhatsApp Web estabilizar no DOM
-    await new Promise((resolve) => setTimeout(resolve, 800));
+    // Aguarda obrigatoriamente o WhatsApp Web inicializar o modulo Store.PairingCode no DOM
+    await this.waitForStorePairingCode();
 
-    // Tentativa 1: Número limpo conforme fornecido (ex: 5519997925412)
+    // Tentativa 1: Número limpo conforme fornecido (ex: 5519983648849)
     try {
       const code = await (this.client as any).requestPairingCode(cleanPhone);
       if (code && typeof code === 'string') return code;
@@ -117,7 +140,7 @@ export class WhatsAppWorker {
       const altPhone = cleanPhone.slice(0, 4) + cleanPhone.slice(5);
       try {
         console.log(`[Worker Pairing] Testando formato sem 9º dígito: ${altPhone}...`);
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await new Promise((resolve) => setTimeout(resolve, 800));
         const code = await (this.client as any).requestPairingCode(altPhone);
         if (code && typeof code === 'string') return code;
       } catch (err2: any) {
