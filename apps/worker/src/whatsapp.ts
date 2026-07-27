@@ -98,59 +98,45 @@ export class WhatsAppWorker {
     return this.running;
   }
 
-  private async waitForStorePairingCode(): Promise<boolean> {
-    console.log(`[Worker Pairing] Aguardando o módulo Store.PairingCode do WhatsApp Web inicializar no navegador...`);
-    for (let attempt = 1; attempt <= 15; attempt++) {
-      try {
-        const page = (this.client as any).pupPage;
-        if (page && !page.isClosed()) {
-          const isReady = await page.evaluate(() => {
-            return typeof (window as any).Store?.PairingCode?.requestPairingCode === 'function';
-          });
-          if (isReady) {
-            console.log(`[Worker Pairing] Módulo Store.PairingCode pronto no navegador após ${attempt * 800}ms.`);
-            return true;
-          }
-        }
-      } catch {
-        // Ignora erros de avaliação enquanto o React do WhatsApp Web ainda está montando os módulos
-      }
-      await new Promise((resolve) => setTimeout(resolve, 800));
-    }
-    console.warn(`[Worker Pairing] Tempo limite de carregamento do Store.PairingCode atingido. Prosseguindo com a tentativa...`);
-    return false;
-  }
-
   private async executePairingCodeWithRetry(phoneNumber: string): Promise<string> {
     const cleanPhone = phoneNumber.replace(/\D/g, '');
 
-    // Aguarda obrigatoriamente o WhatsApp Web inicializar o modulo Store.PairingCode no DOM
-    await this.waitForStorePairingCode();
-
-    // Tentativa 1: Número limpo conforme fornecido (ex: 5519983648849)
-    try {
-      const code = await (this.client as any).requestPairingCode(cleanPhone);
-      if (code && typeof code === 'string') return code;
-    } catch (err1: any) {
-      console.warn(`[Worker Pairing] Aviso na tentativa 1 (${cleanPhone}): ${err1?.message || err1}. Testando estabilização e formatos...`);
+    // Loop de até 10 tentativas com intervalo de 1.2s aguardando a injeção completa dos módulos do WhatsApp Web no Chromium
+    for (let attempt = 1; attempt <= 10; attempt++) {
+      try {
+        console.log(`[Worker Pairing] Solicitando Código de Pareamento (tentativa ${attempt}/10) para número ${cleanPhone}...`);
+        const code = await (this.client as any).requestPairingCode(cleanPhone);
+        if (code && typeof code === 'string' && code.length >= 6) {
+          console.log(`[Worker Pairing] ✨ Código de Pareamento gerado com sucesso na tentativa ${attempt}: ${code}`);
+          return code;
+        }
+      } catch (err: any) {
+        const errMsg = err?.message || String(err || '');
+        console.warn(`[Worker Pairing] Módulo do WhatsApp Web ainda montando na tentativa ${attempt}/10 (${errMsg}). Aguardando 1.2s...`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1200));
     }
 
-    // Tentativa 2: Se for telefone BR de 13 dígitos (55 + 2 dígitos DDD + 9 dígitos), testa sem o nono dígito (ex: 551997925412)
+    // Se o formato principal de 13 dígitos falhou, testa o formato alternativo sem o 9º dígito (ex: 551997925412)
     if (cleanPhone.startsWith('55') && cleanPhone.length === 13) {
       const altPhone = cleanPhone.slice(0, 4) + cleanPhone.slice(5);
-      try {
-        console.log(`[Worker Pairing] Testando formato sem 9º dígito: ${altPhone}...`);
-        await new Promise((resolve) => setTimeout(resolve, 800));
-        const code = await (this.client as any).requestPairingCode(altPhone);
-        if (code && typeof code === 'string') return code;
-      } catch (err2: any) {
-        console.warn(`[Worker Pairing] Aviso na tentativa 2 (${altPhone}): ${err2?.message || err2}`);
+      console.log(`[Worker Pairing] Testando formato de número alternativo sem 9º dígito: ${altPhone}...`);
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        try {
+          const code = await (this.client as any).requestPairingCode(altPhone);
+          if (code && typeof code === 'string' && code.length >= 6) {
+            console.log(`[Worker Pairing] ✨ Código de Pareamento gerado com formato alternativo: ${code}`);
+            return code;
+          }
+        } catch (err: any) {
+          const errMsg = err?.message || String(err || '');
+          console.warn(`[Worker Pairing] Formato alternativo tentativa ${attempt}/5: ${errMsg}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1200));
       }
     }
 
-    // Tentativa 3: Re-tentativa final após 1.2s de pausa
-    await new Promise((resolve) => setTimeout(resolve, 1200));
-    return await (this.client as any).requestPairingCode(cleanPhone);
+    throw new Error('Módulo do WhatsApp indisponível no momento. Tente novamente em instantes.');
   }
 
   public async requestPairingCodeOnDemand(phoneNumber: string): Promise<string | null> {
