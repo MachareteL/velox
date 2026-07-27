@@ -105,7 +105,16 @@ async function main() {
     console.error('[Orchestrator] Exceção não tratada:', err.message);
   });
 
-  process.on('unhandledRejection', (reason) => {
+  process.on('unhandledRejection', (reason: any) => {
+    const msg = reason?.message || String(reason || '');
+    if (
+      msg.includes('Execution context was destroyed') ||
+      msg.includes('Target closed') ||
+      msg.includes('Protocol error')
+    ) {
+      console.warn(`[Orchestrator] Reinicialização de página Chromium detectada (${msg.split('\n')[0]}).`);
+      return;
+    }
     console.error('[Orchestrator] Rejeição não tratada:', reason);
   });
 }
