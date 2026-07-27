@@ -24,7 +24,7 @@ export function QRModal({ isOpen, onClose, status, qrCode, pairingCode, phoneNum
   const [copied, setCopied] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  if (!isOpen) return null;
+
 
   // Formatação com Máscara +55 (XX) XXXXX-XXXX
   const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -132,6 +132,8 @@ export function QRModal({ isOpen, onClose, status, qrCode, pairingCode, phoneNum
     loading ||
     (status === 'DISCONNECTED_NEED_QR' && connectMethod === 'QR' && !qrCode) ||
     (connectMethod === 'PHONE' && !pairingCode && (Boolean(phoneNumber) || Boolean(inputPhone)));
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
