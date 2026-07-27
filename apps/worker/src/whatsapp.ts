@@ -78,6 +78,43 @@ export class WhatsAppWorker {
     }
   }
 
+  public getPhoneNumber(): string | null | undefined {
+    return this.phoneNumber;
+  }
+
+  public async requestPairingCodeOnDemand(phoneNumber: string): Promise<string | null> {
+    const cleanPhone = phoneNumber.replace(/\D/g, '');
+    this.phoneNumber = cleanPhone;
+    try {
+      console.log(`[Worker] Solicitando Código de Pareamento sob demanda para número ${cleanPhone}...`);
+      const pairingCode = await (this.client as any).requestPairingCode(cleanPhone);
+      console.log(`[Worker] Código de Pareamento gerado sob demanda: ${pairingCode}`);
+
+      await updateSessionStatus(
+        this.supabase,
+        this.sessionId,
+        'DISCONNECTED_NEED_QR',
+        null,
+        'vps-worker-01',
+        pairingCode,
+        cleanPhone
+      );
+
+      await recordSystemLog(this.supabase, {
+        tenant_id: this.tenantId,
+        level: 'INFO',
+        event_type: 'PAIRING_CODE_GENERATED',
+        message: `Código de Pareamento por telefone gerado com sucesso: ${pairingCode}`,
+        details: { phoneNumber: cleanPhone, pairingCode },
+      });
+
+      return pairingCode;
+    } catch (pairErr: any) {
+      console.error('[Worker] Erro ao solicitar Código de Pareamento sob demanda:', pairErr.message);
+      return null;
+    }
+  }
+
   private setupListeners(): void {
     // Evento de geração de autenticação (QR Code ou Pairing Code)
     this.client.on('qr', async (qrText: string) => {

@@ -116,13 +116,22 @@ export function QRModal({ isOpen, onClose, status, qrCode, pairingCode, phoneNum
     setTimeout(() => setCopied(false), 2500);
   };
 
+  React.useEffect(() => {
+    if (phoneNumber || pairingCode) {
+      setConnectMethod('PHONE');
+    }
+  }, [phoneNumber, pairingCode]);
+
   const formattedPairingCode = pairingCode
     ? pairingCode.length === 8
       ? `${pairingCode.slice(0, 4)} - ${pairingCode.slice(4)}`
       : pairingCode
     : null;
 
-  const isGenerating = loading || (status === 'DISCONNECTED_NEED_QR' && connectMethod === 'QR' && !qrCode) || (status === 'DISCONNECTED_NEED_QR' && connectMethod === 'PHONE' && !pairingCode && Boolean(phoneNumber));
+  const isGenerating =
+    loading ||
+    (status === 'DISCONNECTED_NEED_QR' && connectMethod === 'QR' && !qrCode) ||
+    (connectMethod === 'PHONE' && !pairingCode && (Boolean(phoneNumber) || Boolean(inputPhone)));
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">

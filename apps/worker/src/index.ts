@@ -24,6 +24,9 @@ async function main() {
     let worker = activeWorkers.get(tenantId);
     if (worker) {
       worker.setIsActive(isActive);
+      if (phoneNumber && phoneNumber !== worker.getPhoneNumber()) {
+        await worker.requestPairingCodeOnDemand(phoneNumber);
+      }
       return;
     }
 
