@@ -66,6 +66,8 @@ async function main() {
     console.log(`[Orchestrator] 🚀 Inicializando ${activeSessions.length} sessões de WhatsApp conectadas no boot.`);
     for (const session of activeSessions) {
       await startWorkerForTenant(session.tenant_id, session.id, session.is_active !== false, session.phone_number);
+      // Stagger de 800ms para suavizar a carga de CPU da VM durante o restart
+      await new Promise((resolve) => setTimeout(resolve, 800));
     }
   } else {
     console.log('[Orchestrator] Nenhum WhatsApp conectado previamente. Aguardando solicitações no banco...');
