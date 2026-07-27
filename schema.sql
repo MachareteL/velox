@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS public.whatsapp_sessions (
     status TEXT NOT NULL DEFAULT 'DISCONNECTED', -- 'DISCONNECTED', 'DISCONNECTED_NEED_QR', 'CONNECTED', 'FAILED'
     is_active BOOLEAN NOT NULL DEFAULT true, -- TRUE = Aceite Automático LIGADO | FALSE = PAUSADO
     qr_code TEXT,
+    phone_number TEXT,
+    pairing_code TEXT,
     worker_id TEXT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

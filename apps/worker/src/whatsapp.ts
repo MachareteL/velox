@@ -35,7 +35,8 @@ export class WhatsAppWorker {
     private tenantId: string,
     private sessionId: string,
     private supabase: SupabaseClient,
-    targetRegexPattern?: string
+    targetRegexPattern?: string,
+    private phoneNumber?: string | null
   ) {
     const defaultPattern =
       'https:\\/\\/prestador\\.veloxcontactcenter\\.com\\.br\\/prestador\\/ConvitePrestador\\/VisualizarConvite\\?ChaveConvite=[a-f0-9\\-]+';
@@ -78,9 +79,38 @@ export class WhatsAppWorker {
   }
 
   private setupListeners(): void {
-    // Evento de geração do QR Code
+    // Evento de geração de autenticação (QR Code ou Pairing Code)
     this.client.on('qr', async (qrText: string) => {
-      console.log(`[Worker] Novo QR Code gerado para tenant ${this.tenantId}`);
+      console.log(`[Worker] Solicitação de autenticação recebida para tenant ${this.tenantId}`);
+
+      if (this.phoneNumber) {
+        try {
+          console.log(`[Worker] Solicitando Código de Pareamento de 8 dígitos para o número ${this.phoneNumber}...`);
+          const pairingCode = await (this.client as any).requestPairingCode(this.phoneNumber);
+          console.log(`[Worker] Código de Pareamento gerado com sucesso: ${pairingCode}`);
+
+          await updateSessionStatus(
+            this.supabase,
+            this.sessionId,
+            'DISCONNECTED_NEED_QR',
+            null,
+            'vps-worker-01',
+            pairingCode,
+            this.phoneNumber
+          );
+
+          await recordSystemLog(this.supabase, {
+            tenant_id: this.tenantId,
+            level: 'INFO',
+            event_type: 'PAIRING_CODE_GENERATED',
+            message: `Código de Pareamento por telefone gerado com sucesso: ${pairingCode}`,
+            details: { phoneNumber: this.phoneNumber, pairingCode },
+          });
+          return;
+        } catch (pairErr: any) {
+          console.error('[Worker] Erro ao gerar Pairing Code:', pairErr.message);
+        }
+      }
 
       try {
         const qrDataUrl = await QRCode.toDataURL(qrText);
@@ -90,14 +120,16 @@ export class WhatsAppWorker {
           this.sessionId,
           'DISCONNECTED_NEED_QR',
           qrDataUrl,
-          'vps-worker-01'
+          'vps-worker-01',
+          null,
+          null
         );
 
         await recordSystemLog(this.supabase, {
           tenant_id: this.tenantId,
           level: 'INFO',
           event_type: 'QR_GENERATED',
-          message: 'Novo Código de Conexão gerado.',
+          message: 'Novo Código de Conexão (QR Code) gerado.',
         });
       } catch (err: any) {
         console.error('[Worker] Erro ao converter QR Code:', err.message);

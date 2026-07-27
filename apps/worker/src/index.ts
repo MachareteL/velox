@@ -20,15 +20,15 @@ async function main() {
   const supabase = createSupabaseClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   const activeWorkers = new Map<string, WhatsAppWorker>();
 
-  const startWorkerForTenant = async (tenantId: string, sessionId: string, isActive: boolean) => {
+  const startWorkerForTenant = async (tenantId: string, sessionId: string, isActive: boolean, phoneNumber?: string | null) => {
     let worker = activeWorkers.get(tenantId);
     if (worker) {
       worker.setIsActive(isActive);
       return;
     }
 
-    console.log(`[Orchestrator] Iniciando worker isolado para tenant ${tenantId} [Automação: ${isActive ? 'LIGADA' : 'PAUSADA'}]...`);
-    worker = new WhatsAppWorker(tenantId, sessionId, supabase);
+    console.log(`[Orchestrator] Iniciando worker isolado para tenant ${tenantId} [Automação: ${isActive ? 'LIGADA' : 'PAUSADA'}]${phoneNumber ? ` [Telefone: ${phoneNumber}]` : ''}...`);
+    worker = new WhatsAppWorker(tenantId, sessionId, supabase, undefined, phoneNumber);
     worker.setIsActive(isActive);
     activeWorkers.set(tenantId, worker);
     await worker.start();
@@ -56,7 +56,7 @@ async function main() {
   if (activeSessions && activeSessions.length > 0) {
     console.log(`[Orchestrator] Encontradas ${activeSessions.length} sessões ativas no boot.`);
     for (const session of activeSessions) {
-      await startWorkerForTenant(session.tenant_id, session.id, session.is_active !== false);
+      await startWorkerForTenant(session.tenant_id, session.id, session.is_active !== false, session.phone_number);
     }
   } else {
     console.log('[Orchestrator] Aguardando novas solicitações de QR Code no banco de dados...');
@@ -88,7 +88,7 @@ async function main() {
         console.log(`[Orchestrator] Evento de sessão [tenant: ${session.tenant_id}]: status = ${session.status}, is_active = ${session.is_active}`);
 
         if (session.status === 'DISCONNECTED_NEED_QR' || session.status === 'CONNECTED') {
-          await startWorkerForTenant(session.tenant_id, session.id, session.is_active !== false);
+          await startWorkerForTenant(session.tenant_id, session.id, session.is_active !== false, session.phone_number);
         } else if (session.status === 'DISCONNECTED') {
           await stopWorkerForTenant(session.tenant_id);
         }

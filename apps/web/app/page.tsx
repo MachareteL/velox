@@ -20,6 +20,8 @@ export default function DashboardPage() {
   const [sessionStatus, setSessionStatus] = useState<WhatsAppSessionStatus>('DISCONNECTED');
   const [isActive, setIsActive] = useState<boolean>(true);
   const [qrCode, setQrCode] = useState<string | null>(null);
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [phoneNumber, setPhoneNumber] = useState<string | null>(null);
   const [isQRModalOpen, setIsQRModalOpen] = useState(false);
 
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
@@ -125,6 +127,8 @@ export default function DashboardPage() {
             setSessionStatus(updated.status);
             setIsActive(updated.is_active !== false);
             setQrCode(updated.qr_code || null);
+            setPairingCode(updated.pairing_code || null);
+            setPhoneNumber(updated.phone_number || null);
 
             if (updated.status === 'DISCONNECTED_NEED_QR') {
               setIsQRModalOpen(true);
@@ -249,6 +253,8 @@ export default function DashboardPage() {
         onClose={() => setIsQRModalOpen(false)}
         status={sessionStatus}
         qrCode={qrCode}
+        pairingCode={pairingCode}
+        phoneNumber={phoneNumber}
       />
     </div>
   );

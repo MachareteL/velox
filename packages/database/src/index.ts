@@ -23,7 +23,9 @@ export async function updateSessionStatus(
   sessionIdOrTenantId: string,
   status: WhatsAppSessionStatus,
   qrCode?: string | null,
-  workerId?: string | null
+  workerId?: string | null,
+  pairingCode?: string | null,
+  phoneNumber?: string | null
 ): Promise<WhatsAppSession | null> {
   const updateData: Partial<WhatsAppSession> = {
     status,
@@ -36,6 +38,12 @@ export async function updateSessionStatus(
   if (workerId !== undefined) {
     updateData.worker_id = workerId;
   }
+  if (pairingCode !== undefined) {
+    updateData.pairing_code = pairingCode;
+  }
+  if (phoneNumber !== undefined) {
+    updateData.phone_number = phoneNumber;
+  }
 
   const { data, error } = await supabase
     .from('whatsapp_sessions')
@@ -46,6 +54,33 @@ export async function updateSessionStatus(
 
   if (error) {
     console.error('Erro ao atualizar whatsapp_session:', error.message);
+    return null;
+  }
+
+  return data as WhatsAppSession;
+}
+
+export async function requestPhonePairingCode(
+  supabase: SupabaseClient,
+  tenantId: string,
+  phoneNumber: string
+): Promise<WhatsAppSession | null> {
+  const cleanPhone = phoneNumber.replace(/\D/g, '');
+  const { data, error } = await supabase
+    .from('whatsapp_sessions')
+    .update({
+      phone_number: cleanPhone,
+      pairing_code: null,
+      qr_code: null,
+      status: 'DISCONNECTED_NEED_QR',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('tenant_id', tenantId)
+    .select('*')
+    .maybeSingle();
+
+  if (error) {
+    console.error('Erro ao solicitar pairing_code:', error.message);
     return null;
   }
 
