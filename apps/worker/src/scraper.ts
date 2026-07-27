@@ -327,6 +327,7 @@ export class VeloxScraper {
 
         if (attempt < maxAttempts) {
           console.warn(`[Scraper] 🔄 Erro temporário na tentativa ${attempt}. Aguardando 300ms para re-tentar...`);
+          await new Promise((r) => setTimeout(r, 300));
         }
         console.log(`================================================================================\n`);
       }
