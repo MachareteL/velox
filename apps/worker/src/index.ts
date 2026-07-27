@@ -46,11 +46,11 @@ async function main() {
     }
   };
 
-  // 1. Carrega sessões existentes no boot
+  // 1. Carrega todas as sessões ativas do banco no boot (para reaproveitar autenticação salva em disco)
   const { data: activeSessions, error: bootErr } = await supabase
     .from('whatsapp_sessions')
     .select('*')
-    .in('status', ['DISCONNECTED_NEED_QR', 'CONNECTED']);
+    .eq('is_active', true);
 
   if (bootErr) {
     console.error('[Orchestrator] Erro ao carregar sessões no boot:', bootErr);
@@ -90,10 +90,16 @@ async function main() {
 
         console.log(`[Orchestrator] Evento de sessão [tenant: ${session.tenant_id}]: status = ${session.status}, is_active = ${session.is_active}`);
 
-        if (session.status === 'DISCONNECTED_NEED_QR' || session.status === 'CONNECTED') {
-          await startWorkerForTenant(session.tenant_id, session.id, session.is_active !== false, session.phone_number);
-        } else if (session.status === 'DISCONNECTED') {
-          await stopWorkerForTenant(session.tenant_id);
+        if (session.is_active === false) {
+          const worker = activeWorkers.get(session.tenant_id);
+          if (worker) {
+            worker.setIsActive(false);
+          }
+          return;
+        }
+
+        if (session.status === 'DISCONNECTED_NEED_QR' || session.status === 'CONNECTED' || session.status === 'DISCONNECTED') {
+          await startWorkerForTenant(session.tenant_id, session.id, true, session.phone_number);
         }
       }
     )

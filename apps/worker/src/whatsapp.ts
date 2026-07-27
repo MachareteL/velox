@@ -6,6 +6,8 @@ import { recordCapturedCall, recordSystemLog, updateSessionStatus } from '@velox
 import { VeloxScraper } from './scraper';
 import { calcularPrevia } from './calculator';
 
+import path from 'path';
+
 function getWindowsChromePath(): string | null {
   const paths = [
     'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
@@ -62,8 +64,13 @@ export class WhatsAppWorker {
       puppeteerConfig.executablePath = systemChromePath;
     }
 
+    const authDataPath = process.env.WWEBJS_AUTH_PATH || path.resolve(process.cwd(), '.wwebjs_auth');
+
     this.client = new Client({
-      authStrategy: new LocalAuth({ clientId: `tenant_${tenantId}` }),
+      authStrategy: new LocalAuth({
+        clientId: `tenant_${tenantId}`,
+        dataPath: authDataPath,
+      }),
       puppeteer: puppeteerConfig,
     });
 
@@ -204,6 +211,29 @@ export class WhatsAppWorker {
       }
       this.lastReconnectTime = now;
 
+      // APENAS se o usuário fez LOGOUT explícito no celular desvinculamos a sessão no Supabase
+      if (reason === 'LOGOUT') {
+        console.warn(`[Worker] Logout explícito no celular detectado para tenant ${this.tenantId}. Marcando como necessário novo QR code.`);
+        await updateSessionStatus(
+          this.supabase,
+          this.sessionId,
+          'DISCONNECTED_NEED_QR',
+          null,
+          'vps-worker-01',
+          null,
+          null
+        );
+
+        await recordSystemLog(this.supabase, {
+          tenant_id: this.tenantId,
+          level: 'WARN',
+          event_type: 'SESSION_LOGOUT',
+          message: 'Sessão desconectada via WhatsApp (Logout). É necessário escaneamento.',
+        });
+        return;
+      }
+
+      // Para quedas temporárias/restarts: mantém status DISCONNECTED sem invalidar a sessão salva no disco
       await updateSessionStatus(
         this.supabase,
         this.sessionId,
@@ -212,36 +242,16 @@ export class WhatsAppWorker {
         'vps-worker-01'
       );
 
-      if (reason === 'LOGOUT' || this.reconnectAttempts >= this.maxReconnectAttempts) {
-        console.warn(`[Worker Anti-Ban] Limite seguro de reconexões atingido (${this.reconnectAttempts}/${this.maxReconnectAttempts}) para tenant ${this.tenantId}. Interrompendo para evitar bloqueios.`);
-
-        await updateSessionStatus(
-          this.supabase,
-          this.sessionId,
-          'DISCONNECTED_NEED_QR',
-          null,
-          'vps-worker-01'
-        );
-
-        await recordSystemLog(this.supabase, {
-          tenant_id: this.tenantId,
-          level: 'WARN',
-          event_type: 'RECONNECT_COOLDOWN',
-          message: 'Reconexão temporariamente suspensa por segurança para prevenir bloqueios do WhatsApp.',
-        });
-        return;
-      }
-
       this.reconnectAttempts++;
-      const backoffDelayMs = Math.min(60000, Math.pow(3, this.reconnectAttempts) * 3000 + Math.floor(Math.random() * 2000));
-      console.log(`[Worker Anti-Ban] Agendando reconexão segura #${this.reconnectAttempts} em ${(backoffDelayMs / 1000).toFixed(1)}s...`);
+      const backoffDelayMs = Math.min(60000, Math.pow(2, this.reconnectAttempts) * 2000 + Math.floor(Math.random() * 1000));
+      console.log(`[Worker Reconnect] Agendando reconexão automática #${this.reconnectAttempts} em ${(backoffDelayMs / 1000).toFixed(1)}s...`);
 
       if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
       this.reconnectTimer = setTimeout(async () => {
         try {
           await this.client.initialize();
         } catch (err: any) {
-          console.error('[Worker Anti-Ban] Erro ao tentar reconectar:', err.message);
+          console.error('[Worker Reconnect] Erro ao reconectar sessão salva:', err.message);
         }
       }, backoffDelayMs);
     });
