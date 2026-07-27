@@ -100,107 +100,26 @@ export class WhatsAppWorker {
 
   private async executePairingCodeWithRetry(phoneNumber: string): Promise<string> {
     const cleanPhone = phoneNumber.replace(/\D/g, '');
-    const page = (this.client as any).pupPage;
 
-    if (!page || page.isClosed()) {
-      throw new Error('Navegador Chromium não está aberto para pareamento.');
-    }
+    // Aguarda 1.5s inicial para o WhatsApp Web estabilizar a página no Chromium
+    await new Promise((resolve) => setTimeout(resolve, 1500));
 
-    // Loop de até 10 tentativas com intervalo de 1.2s
-    for (let attempt = 1; attempt <= 10; attempt++) {
+    for (let attempt = 1; attempt <= 6; attempt++) {
       try {
-        console.log(`[Worker Pairing] Solicitando Código de Pareamento via DOM (tentativa ${attempt}/10) para número ${cleanPhone}...`);
-
-        // 1. Simula o clique no botão "Conectar com número de telefone" no canvas do WhatsApp Web se existir
-        await page.evaluate(() => {
-          const elements = Array.from(document.querySelectorAll('span, div, button'));
-          const linkBtn = elements.find((el) => {
-            const txt = el.textContent || '';
-            return (
-              txt.includes('Link with phone number') ||
-              txt.includes('Conectar com número de telefone') ||
-              txt.includes('Conectar com número') ||
-              txt.includes('número de telefone')
-            );
-          });
-          if (linkBtn) (linkBtn as HTMLElement).click();
-        }).catch(() => {});
-
-        // 2. Chama o método de pareamento no escopo do navegador do WhatsApp Web
-        const result = await page.evaluate(async (phone: string) => {
-          try {
-            const store = (window as any).Store;
-            if (store?.PairingCodeLinkUtils?.requestPairingCode) {
-              return await store.PairingCodeLinkUtils.requestPairingCode(phone);
-            }
-            if (store?.PairingCode?.requestPairingCode) {
-              return await store.PairingCode.requestPairingCode(phone);
-            }
-            if ((window as any).require) {
-              const mod = (window as any).require('WAWebPairingCodeLinkUtils') || (window as any).require('PairingCodeLinkUtils');
-              if (mod?.requestPairingCode) {
-                return await mod.requestPairingCode(phone);
-              }
-            }
-            return { error: 'MOUNTING' };
-          } catch (e: any) {
-            return { error: e?.message || String(e || 't') };
-          }
-        }, cleanPhone);
-
-        if (result && typeof result === 'string' && result.length >= 6) {
-          console.log(`[Worker Pairing] ✨ Código de Pareamento gerado com sucesso na tentativa ${attempt}: ${result}`);
-          return result;
-        }
-
-        if (result && typeof result === 'object' && result.error && result.error !== 'MOUNTING') {
-          console.warn(`[Worker Pairing] Tentativa ${attempt}/10 retornou: ${result.error}. Aguardando 1.2s...`);
+        console.log(`[Worker Pairing] Solicitando Código de Pareamento (tentativa ${attempt}/6) para número ${cleanPhone}...`);
+        const code = await (this.client as any).requestPairingCode(cleanPhone);
+        if (code && typeof code === 'string' && code.length >= 6) {
+          console.log(`[Worker Pairing] ✨ Código de Pareamento gerado com sucesso na tentativa ${attempt}: ${code}`);
+          return code;
         }
       } catch (err: any) {
-        console.warn(`[Worker Pairing] Tentativa ${attempt}/10 erro de avaliação: ${err?.message || err}. Aguardando 1.2s...`);
+        const errMsg = err?.message || String(err || 't');
+        console.warn(`[Worker Pairing] Tentativa ${attempt}/6 (${errMsg}). Aguardando 2s para estabilização do WhatsApp...`);
       }
-      await new Promise((resolve) => setTimeout(resolve, 1200));
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
 
-    // Se o formato principal de 13 dígitos falhou, testa o formato alternativo sem o 9º dígito (ex: 551997925412)
-    if (cleanPhone.startsWith('55') && cleanPhone.length === 13) {
-      const altPhone = cleanPhone.slice(0, 4) + cleanPhone.slice(5);
-      console.log(`[Worker Pairing] Testando formato de número alternativo sem 9º dígito: ${altPhone}...`);
-      for (let attempt = 1; attempt <= 5; attempt++) {
-        try {
-          const result = await page.evaluate(async (phone: string) => {
-            try {
-              const store = (window as any).Store;
-              if (store?.PairingCodeLinkUtils?.requestPairingCode) {
-                return await store.PairingCodeLinkUtils.requestPairingCode(phone);
-              }
-              if (store?.PairingCode?.requestPairingCode) {
-                return await store.PairingCode.requestPairingCode(phone);
-              }
-              if ((window as any).require) {
-                const mod = (window as any).require('WAWebPairingCodeLinkUtils') || (window as any).require('PairingCodeLinkUtils');
-                if (mod?.requestPairingCode) {
-                  return await mod.requestPairingCode(phone);
-                }
-              }
-              return { error: 'MOUNTING' };
-            } catch (e: any) {
-              return { error: e?.message || String(e || 't') };
-            }
-          }, altPhone);
-
-          if (result && typeof result === 'string' && result.length >= 6) {
-            console.log(`[Worker Pairing] ✨ Código gerado com sucesso no formato alternativo: ${result}`);
-            return result;
-          }
-        } catch (err: any) {
-          console.warn(`[Worker Pairing] Formato alternativo tentativa ${attempt}/5: ${err?.message || err}`);
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1200));
-      }
-    }
-
-    throw new Error('Módulo de pareamento por telefone do WhatsApp indisponível no momento. Tente via QR Code.');
+    throw new Error('Não foi possível gerar o código por telefone no momento. Tente novamente em instantes.');
   }
 
   public async requestPairingCodeOnDemand(phoneNumber: string): Promise<string | null> {
