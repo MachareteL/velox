@@ -26,6 +26,10 @@ export class WhatsAppWorker {
   private inviteRegex: RegExp;
   private isActive: boolean = true;
 
+  // Controle Anti-Spam de QR Code e Recursos da VM
+  private qrCount: number = 0;
+  private maxQrAttempts: number = 8;
+
   // Controle Anti-Ban / Anti-Spam de Reconexão
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number = 3;
@@ -92,6 +96,7 @@ export class WhatsAppWorker {
   public async requestPairingCodeOnDemand(phoneNumber: string): Promise<string | null> {
     const cleanPhone = phoneNumber.replace(/\D/g, '');
     this.phoneNumber = cleanPhone;
+    this.qrCount = 0;
     try {
       console.log(`[Worker] Solicitando Código de Pareamento sob demanda para número ${cleanPhone}...`);
       const pairingCode = await (this.client as any).requestPairingCode(cleanPhone);
@@ -125,7 +130,31 @@ export class WhatsAppWorker {
   private setupListeners(): void {
     // Evento de geração de autenticação (QR Code ou Pairing Code)
     this.client.on('qr', async (qrText: string) => {
-      console.log(`[Worker] Solicitação de autenticação recebida para tenant ${this.tenantId}`);
+      this.qrCount++;
+      console.log(`[Worker] Geração de autenticação #${this.qrCount}/${this.maxQrAttempts} recebida para tenant ${this.tenantId}`);
+
+      if (this.qrCount > this.maxQrAttempts) {
+        console.warn(`[Worker Anti-Spam] Limite de renovações de QR Code atingido (${this.qrCount}/${this.maxQrAttempts}) para tenant ${this.tenantId}. Encerrando robô para economizar recursos.`);
+        await updateSessionStatus(
+          this.supabase,
+          this.sessionId,
+          'DISCONNECTED',
+          null,
+          'vps-worker-01',
+          null,
+          null
+        );
+
+        await recordSystemLog(this.supabase, {
+          tenant_id: this.tenantId,
+          level: 'WARN',
+          event_type: 'QR_TIMEOUT_PAUSE',
+          message: 'Renovação de QR Code desativada por inatividade para preservar servidor. Clique em Gerar QR Code no painel.',
+        });
+
+        await this.stop();
+        return;
+      }
 
       if (this.phoneNumber) {
         try {

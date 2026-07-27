@@ -46,23 +46,24 @@ async function main() {
     }
   };
 
-  // 1. Carrega todas as sessões ativas do banco no boot (para reaproveitar autenticação salva em disco)
+  // 1. Carrega APENAS sessões com status CONNECTED no boot para economizar RAM/CPU da VM
   const { data: activeSessions, error: bootErr } = await supabase
     .from('whatsapp_sessions')
     .select('*')
-    .eq('is_active', true);
+    .eq('is_active', true)
+    .eq('status', 'CONNECTED');
 
   if (bootErr) {
     console.error('[Orchestrator] Erro ao carregar sessões no boot:', bootErr);
   }
 
   if (activeSessions && activeSessions.length > 0) {
-    console.log(`[Orchestrator] Encontradas ${activeSessions.length} sessões ativas no boot.`);
+    console.log(`[Orchestrator] 🚀 Inicializando ${activeSessions.length} sessões de WhatsApp conectadas no boot.`);
     for (const session of activeSessions) {
       await startWorkerForTenant(session.tenant_id, session.id, session.is_active !== false, session.phone_number);
     }
   } else {
-    console.log('[Orchestrator] Aguardando novas solicitações de QR Code no banco de dados...');
+    console.log('[Orchestrator] Nenhum WhatsApp conectado previamente. Aguardando solicitações no banco...');
   }
 
   // 2. Escuta global de alterações na tabela whatsapp_sessions para todos os tenants
