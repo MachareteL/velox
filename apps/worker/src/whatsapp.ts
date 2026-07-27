@@ -175,6 +175,11 @@ export class WhatsAppWorker {
           event_type: 'QR_GENERATED',
           message: 'Novo Código de Conexão (QR Code) gerado.',
         });
+      } catch (err: any) {
+        console.error('[Worker] Erro ao converter QR Code:', err.message);
+      }
+    });
+
     // Evento disparado no exato instante em que o celular aprova o QR Code ou Pairing Code
     this.client.on('authenticated', async () => {
       console.log(`[Worker] ✨ Conexão aprovada pelo celular para tenant ${this.tenantId}! Inicializando automação...`);
