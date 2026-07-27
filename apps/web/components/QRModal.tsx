@@ -153,7 +153,7 @@ export function QRModal({ isOpen, onClose, status, qrCode, pairingCode, phoneNum
         </div>
 
         {/* Abas de Escolha do Método */}
-        {status !== 'CONNECTED' && (
+        {status !== 'CONNECTED' && status !== 'AUTHENTICATING' && (
           <div className="grid grid-cols-2 gap-1 bg-gray-950 p-1.5 rounded-2xl border border-gray-800 mb-5">
             <button
               onClick={() => {
@@ -204,6 +204,21 @@ export function QRModal({ isOpen, onClose, status, qrCode, pairingCode, phoneNum
               <p className="text-xs text-gray-400 mt-1">
                 Sua automação está ativa e aceitando os convites recebidos.
               </p>
+            </div>
+          ) : status === 'AUTHENTICATING' ? (
+            <div className="text-center py-6 flex flex-col items-center justify-center">
+              <div className="w-16 h-16 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto mb-4 border border-emerald-500/40 shadow-lg shadow-emerald-500/20 animate-pulse">
+                <CheckCircle2 className="w-10 h-10 text-emerald-400" />
+              </div>
+              <h4 className="text-lg font-extrabold text-white mb-1.5 tracking-tight">
+                Conexão Estabelecida com Sucesso! 🎉
+              </h4>
+              <p className="text-xs text-emerald-300 font-medium max-w-[280px] leading-relaxed mb-3">
+                Celular autenticado. Aguarde alguns segundos enquanto a automação sincroniza seu WhatsApp...
+              </p>
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-950/60 rounded-full border border-emerald-800/40 text-[11px] text-emerald-400">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Sincronizando conversas...
+              </div>
             </div>
           ) : connectMethod === 'QR' ? (
             qrCode ? (
@@ -316,7 +331,7 @@ export function QRModal({ isOpen, onClose, status, qrCode, pairingCode, phoneNum
         </div>
 
         {/* Instruções Passo a Passo & Botão de Forçar Novo Código */}
-        {status !== 'CONNECTED' && (
+        {status !== 'CONNECTED' && status !== 'AUTHENTICATING' && (
           <div className="mt-5 pt-4 border-t border-gray-800/80">
             {connectMethod === 'QR' ? (
               <>

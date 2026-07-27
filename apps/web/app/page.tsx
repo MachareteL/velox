@@ -130,8 +130,12 @@ export default function DashboardPage() {
             setPairingCode(updated.pairing_code || null);
             setPhoneNumber(updated.phone_number || null);
 
-            if (updated.status === 'DISCONNECTED_NEED_QR') {
+            if (updated.status === 'DISCONNECTED_NEED_QR' || updated.status === 'AUTHENTICATING') {
               setIsQRModalOpen(true);
+            } else if (updated.status === 'CONNECTED') {
+              setTimeout(() => {
+                setIsQRModalOpen(false);
+              }, 2500);
             }
           }
         }

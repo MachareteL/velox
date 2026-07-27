@@ -16,6 +16,7 @@ export interface Vehicle {
 export type WhatsAppSessionStatus =
   | 'DISCONNECTED'
   | 'DISCONNECTED_NEED_QR'
+  | 'AUTHENTICATING'
   | 'CONNECTED'
   | 'FAILED';
 

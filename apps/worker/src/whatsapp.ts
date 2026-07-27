@@ -175,9 +175,31 @@ export class WhatsAppWorker {
           event_type: 'QR_GENERATED',
           message: 'Novo Código de Conexão (QR Code) gerado.',
         });
-      } catch (err: any) {
-        console.error('[Worker] Erro ao converter QR Code:', err.message);
-      }
+    // Evento disparado no exato instante em que o celular aprova o QR Code ou Pairing Code
+    this.client.on('authenticated', async () => {
+      console.log(`[Worker] ✨ Conexão aprovada pelo celular para tenant ${this.tenantId}! Inicializando automação...`);
+
+      await updateSessionStatus(
+        this.supabase,
+        this.sessionId,
+        'AUTHENTICATING',
+        null,
+        'vps-worker-01',
+        null,
+        this.phoneNumber || null
+      );
+
+      await recordSystemLog(this.supabase, {
+        tenant_id: this.tenantId,
+        level: 'INFO',
+        event_type: 'SESSION_AUTHENTICATED',
+        message: 'Código/QR Code lido no celular com sucesso! Inicializando a automação...',
+      });
+    });
+
+    // Monitoramento do percentual de carregamento do WhatsApp Web
+    this.client.on('loading_screen', async (percent: number, message: string) => {
+      console.log(`[Worker] Carregando conversas do WhatsApp para tenant ${this.tenantId}: ${percent}% (${message})`);
     });
 
     // Evento de conexão pronta
