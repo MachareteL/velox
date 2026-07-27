@@ -98,6 +98,38 @@ export class WhatsAppWorker {
     return this.running;
   }
 
+  private async executePairingCodeWithRetry(phoneNumber: string): Promise<string> {
+    const cleanPhone = phoneNumber.replace(/\D/g, '');
+
+    // Aguarda 800ms para o Store.PairingCode do WhatsApp Web estabilizar no DOM
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    // Tentativa 1: Número limpo conforme fornecido (ex: 5519997925412)
+    try {
+      const code = await (this.client as any).requestPairingCode(cleanPhone);
+      if (code && typeof code === 'string') return code;
+    } catch (err1: any) {
+      console.warn(`[Worker Pairing] Aviso na tentativa 1 (${cleanPhone}): ${err1?.message || err1}. Testando estabilização e formatos...`);
+    }
+
+    // Tentativa 2: Se for telefone BR de 13 dígitos (55 + 2 dígitos DDD + 9 dígitos), testa sem o nono dígito (ex: 551997925412)
+    if (cleanPhone.startsWith('55') && cleanPhone.length === 13) {
+      const altPhone = cleanPhone.slice(0, 4) + cleanPhone.slice(5);
+      try {
+        console.log(`[Worker Pairing] Testando formato sem 9º dígito: ${altPhone}...`);
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        const code = await (this.client as any).requestPairingCode(altPhone);
+        if (code && typeof code === 'string') return code;
+      } catch (err2: any) {
+        console.warn(`[Worker Pairing] Aviso na tentativa 2 (${altPhone}): ${err2?.message || err2}`);
+      }
+    }
+
+    // Tentativa 3: Re-tentativa final após 1.2s de pausa
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    return await (this.client as any).requestPairingCode(cleanPhone);
+  }
+
   public async requestPairingCodeOnDemand(phoneNumber: string): Promise<string | null> {
     const cleanPhone = phoneNumber.replace(/\D/g, '');
     this.phoneNumber = cleanPhone;
@@ -111,7 +143,7 @@ export class WhatsAppWorker {
 
     try {
       console.log(`[Worker] Solicitando Código de Pareamento sob demanda para número ${cleanPhone}...`);
-      const pairingCode = await (this.client as any).requestPairingCode(cleanPhone);
+      const pairingCode = await this.executePairingCodeWithRetry(cleanPhone);
       console.log(`[Worker] Código de Pareamento gerado sob demanda: ${pairingCode}`);
 
       await updateSessionStatus(
@@ -134,9 +166,9 @@ export class WhatsAppWorker {
 
       return pairingCode;
     } catch (pairErr: any) {
-      console.error('[Worker] Erro ao solicitar Código de Pareamento sob demanda:', pairErr.message);
+      const errMsg = pairErr?.message || String(pairErr || 't');
+      console.error('[Worker] Erro ao solicitar Código de Pareamento sob demanda:', errMsg);
 
-      // Se o quadro do Chromium foi corrompido/desconectado (detached Frame), recarrega o cliente do WhatsApp
       try {
         console.warn(`[Worker] Recarregando navegador do tenant ${this.tenantId} para restaurar quadro Chromium...`);
         this.qrCount = 0;
@@ -181,7 +213,7 @@ export class WhatsAppWorker {
       if (this.phoneNumber) {
         try {
           console.log(`[Worker] Solicitando Código de Pareamento de 8 dígitos para o número ${this.phoneNumber}...`);
-          const pairingCode = await (this.client as any).requestPairingCode(this.phoneNumber);
+          const pairingCode = await this.executePairingCodeWithRetry(this.phoneNumber);
           console.log(`[Worker] Código de Pareamento gerado com sucesso: ${pairingCode}`);
 
           await updateSessionStatus(
@@ -203,7 +235,8 @@ export class WhatsAppWorker {
           });
           return;
         } catch (pairErr: any) {
-          console.error('[Worker] Erro ao gerar Pairing Code:', pairErr.message);
+          const errMsg = pairErr?.message || String(pairErr || 't');
+          console.error('[Worker] Erro ao gerar Pairing Code:', errMsg);
         }
       }
 
