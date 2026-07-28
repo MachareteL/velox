@@ -106,7 +106,7 @@ async function main() {
           return;
         }
 
-        if (session.status === 'DISCONNECTED_NEED_QR' || session.status === 'CONNECTED' || session.status === 'DISCONNECTED') {
+        if (session.status === 'DISCONNECTED_NEED_QR' || session.status === 'CONNECTED') {
           const existingWorker = activeWorkers.get(session.tenant_id);
           if (
             existingWorker &&
@@ -121,6 +121,9 @@ async function main() {
           }
 
           await startWorkerForTenant(session.tenant_id, session.id, true, session.phone_number);
+        } else if (session.status === 'DISCONNECTED') {
+          console.log(`[Orchestrator] Sessão desconectada/pausada para tenant ${session.tenant_id}. Encerrando worker inativo...`);
+          await stopWorkerForTenant(session.tenant_id);
         }
       }
     )

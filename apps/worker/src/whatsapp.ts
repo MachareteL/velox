@@ -27,7 +27,7 @@ function purgeSessionDir(tenantId: string): void {
 
     if (fs.existsSync(sessionDir)) {
       console.log(`[Worker] Expurgando diretório de sessão desautorizada/desconectada: ${sessionDir}`);
-      fs.rmSync(sessionDir, { recursive: true, force: true });
+      fs.rmSync(sessionDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     }
   } catch (err: any) {
     console.warn(`[Worker] Erro ao expurgar pasta de sessão: ${err?.message}`);
@@ -58,6 +58,7 @@ export class WhatsAppWorker {
   private inviteRegex: RegExp;
   private isActive: boolean = true;
   private running: boolean = false;
+  private starting: boolean = false;
 
   // Controle Anti-Spam de QR Code e Recursos da VM
   private qrCount: number = 0;
@@ -149,38 +150,77 @@ export class WhatsAppWorker {
   }
 
   private async executePairingCodeWithRetry(phoneNumber: string): Promise<string> {
-    const rawPhone = phoneNumber.replace(/\D/g, '');
+    const digits = phoneNumber.replace(/\D/g, '');
 
-    // Monta a lista de formatos (nacional sem 55 e internacional com 55)
-    const formatsToTry: string[] = [];
-    if (rawPhone.length === 11) {
-      formatsToTry.push(rawPhone); // ex: 19983648849
-      formatsToTry.push(`55${rawPhone}`); // ex: 5519983648849
-    } else if (rawPhone.startsWith('55') && rawPhone.length === 13) {
-      formatsToTry.push(rawPhone); // ex: 5519983648849
-      formatsToTry.push(rawPhone.slice(2)); // ex: 19983648849
-    } else {
-      formatsToTry.push(rawPhone);
-      if (!rawPhone.startsWith('55')) formatsToTry.push(`55${rawPhone}`);
+    // Garante que números do Brasil sempre comecem com DDI 55
+    let fullPhoneWithDdi = digits;
+    if (!fullPhoneWithDdi.startsWith('55') && (fullPhoneWithDdi.length === 10 || fullPhoneWithDdi.length === 11)) {
+      fullPhoneWithDdi = `55${fullPhoneWithDdi}`;
     }
 
-    // Aguarda 1.5s inicial para o WhatsApp Web estabilizar a página no Chromium
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const formatsToTry: string[] = [];
+    if (fullPhoneWithDdi.startsWith('55')) {
+      if (fullPhoneWithDdi.length === 13) {
+        // Ex: 5519983648849 (13 dígitos com o 9º dígito)
+        formatsToTry.push(fullPhoneWithDdi);
+        // Ex: 551983648849 (12 dígitos sem o 9º dígito)
+        const withoutNine = '55' + fullPhoneWithDdi.slice(2, 4) + fullPhoneWithDdi.slice(5);
+        if (!formatsToTry.includes(withoutNine)) formatsToTry.push(withoutNine);
+      } else if (fullPhoneWithDdi.length === 12) {
+        // Ex: 551983648849 (12 dígitos sem o 9º dígito)
+        formatsToTry.push(fullPhoneWithDdi);
+        // Ex: 5519983648849 (13 dígitos com o 9º dígito)
+        const withNine = '55' + fullPhoneWithDdi.slice(2, 4) + '9' + fullPhoneWithDdi.slice(4);
+        if (!formatsToTry.includes(withNine)) formatsToTry.push(withNine);
+      } else {
+        formatsToTry.push(fullPhoneWithDdi);
+      }
+    } else {
+      formatsToTry.push(fullPhoneWithDdi);
+    }
 
-    for (const phoneCandidate of formatsToTry) {
-      for (let attempt = 1; attempt <= 3; attempt++) {
+    console.log(`[Worker Pairing] Formatos de telefone com DDI internacional a testar:`, formatsToTry);
+
+    const pupPage = (this.client as any).pupPage;
+
+    for (let index = 0; index < formatsToTry.length; index++) {
+      const phoneCandidate = formatsToTry[index];
+
+      // Se não for o primeiro candidato, recarrega a página Chromium para redefinir o estado ALT_DEVICE_LINKING
+      if (index > 0 && pupPage) {
         try {
-          console.log(`[Worker Pairing] Solicitando Código de Pareamento (formato: ${phoneCandidate}, tentativa ${attempt}/3)...`);
-          const code = await (this.client as any).requestPairingCode(phoneCandidate);
-          if (code && typeof code === 'string' && code.length >= 6) {
-            console.log(`[Worker Pairing] ✨ Código de Pareamento gerado com sucesso (${phoneCandidate}): ${code}`);
-            return code;
-          }
-        } catch (err: any) {
-          const errMsg = err?.message || String(err || 't');
-          console.warn(`[Worker Pairing] Formato ${phoneCandidate} tentativa ${attempt}/3 (${errMsg}). Aguardando 2s...`);
+          console.log(`[Worker Pairing] Recarregando página Chromium para redefinir estado de pareamento...`);
+          await pupPage.evaluate(() => location.reload());
+          await new Promise((resolve) => setTimeout(resolve, 4000));
+        } catch (reloadErr: any) {
+          console.warn(`[Worker Pairing] Erro ao recarregar página: ${reloadErr?.message}`);
         }
+      } else {
         await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+
+      // Aguarda o WhatsApp Web carregar o utilitário de pareamento no navegador
+      if (pupPage) {
+        try {
+          await pupPage.waitForFunction(
+            () => (window as any).AuthStore && (window as any).AuthStore.PairingCodeLinkUtils !== undefined,
+            { timeout: 8000 }
+          );
+        } catch (_) {
+          console.warn('[Worker Pairing] AuthStore.PairingCodeLinkUtils não respondeu em 8s. Tentando avançar...');
+        }
+      }
+
+      try {
+        console.log(`[Worker Pairing] Solicitando Código de Pareamento (formato DDI: ${phoneCandidate})...`);
+        const code = await (this.client as any).requestPairingCode(phoneCandidate);
+        if (code && typeof code === 'string' && code.length >= 6) {
+          console.log(`[Worker Pairing] ✨ Código de Pareamento VÁLIDO gerado com sucesso (${phoneCandidate}): ${code}`);
+          return code;
+        }
+      } catch (err: any) {
+        const errMsg = err?.message || String(err || 't');
+        console.warn(`[Worker Pairing] Erro com formato ${phoneCandidate}: (${errMsg})`);
       }
     }
 
@@ -266,36 +306,6 @@ export class WhatsAppWorker {
 
         await this.stop();
         return;
-      }
-
-      if (this.phoneNumber) {
-        try {
-          console.log(`[Worker] Solicitando Código de Pareamento de 8 dígitos para o número ${this.phoneNumber}...`);
-          const pairingCode = await this.executePairingCodeWithRetry(this.phoneNumber);
-          console.log(`[Worker] Código de Pareamento gerado com sucesso: ${pairingCode}`);
-
-          await updateSessionStatus(
-            this.supabase,
-            this.sessionId,
-            'DISCONNECTED_NEED_QR',
-            null,
-            'vps-worker-01',
-            pairingCode,
-            this.phoneNumber
-          );
-
-          await recordSystemLog(this.supabase, {
-            tenant_id: this.tenantId,
-            level: 'INFO',
-            event_type: 'PAIRING_CODE_GENERATED',
-            message: `Código de Pareamento por telefone gerado com sucesso: ${pairingCode}`,
-            details: { phoneNumber: this.phoneNumber, pairingCode },
-          });
-          return;
-        } catch (pairErr: any) {
-          const errMsg = pairErr?.message || String(pairErr || 't');
-          console.error('[Worker] Erro ao gerar Pairing Code:', errMsg);
-        }
       }
 
       try {
@@ -549,13 +559,26 @@ export class WhatsAppWorker {
   }
 
   public async start(): Promise<void> {
-    console.log(`[Worker] Inicializando cliente WhatsApp para tenant ${this.tenantId}...`);
-    this.running = true;
-    await this.client.initialize();
+    if (this.starting || this.running) {
+      console.log(`[Worker] Worker já está rodando ou em processo de inicialização para tenant ${this.tenantId}. Ignorando nova chamada.`);
+      return;
+    }
+    this.starting = true;
+    try {
+      console.log(`[Worker] Inicializando cliente WhatsApp para tenant ${this.tenantId}...`);
+      this.running = true;
+      await this.client.initialize();
+    } catch (err: any) {
+      this.running = false;
+      throw err;
+    } finally {
+      this.starting = false;
+    }
   }
 
   public async stop(): Promise<void> {
     this.running = false;
+    this.starting = false;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     try {
       await this.client.destroy();
