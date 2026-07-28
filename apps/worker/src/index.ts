@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 import { createSupabaseClient } from '@velox/database';
 import { WhatsAppWorker } from './whatsapp';
 
