@@ -51,26 +51,33 @@ async function main() {
     }
   };
 
-  // 1. Carrega APENAS sessões com status CONNECTED no boot para economizar RAM/CPU da VM
+  // 1. Carrega todas as sessões com is_active = true no boot
   const { data: activeSessions, error: bootErr } = await supabase
     .from('whatsapp_sessions')
     .select('*')
-    .eq('is_active', true)
-    .eq('status', 'CONNECTED');
+    .eq('is_active', true);
 
   if (bootErr) {
     console.error('[Orchestrator] Erro ao carregar sessões no boot:', bootErr);
   }
 
   if (activeSessions && activeSessions.length > 0) {
-    console.log(`[Orchestrator] 🚀 Inicializando ${activeSessions.length} sessões de WhatsApp conectadas no boot.`);
+    console.log(`[Orchestrator] 🚀 Verificando ${activeSessions.length} sessões ativas no boot...`);
+    const authDataPath = process.env.WWEBJS_AUTH_PATH || path.resolve(process.cwd(), '.wwebjs_auth');
+
     for (const session of activeSessions) {
-      await startWorkerForTenant(session.tenant_id, session.id, session.is_active !== false, session.phone_number);
-      // Stagger de 800ms para suavizar a carga de CPU da VM durante o restart
-      await new Promise((resolve) => setTimeout(resolve, 800));
+      const sessionDir = path.join(authDataPath, `session-tenant_${session.tenant_id}`);
+      const hasSessionDir = fs.existsSync(sessionDir);
+
+      if (session.status === 'CONNECTED' || hasSessionDir) {
+        console.log(`[Orchestrator] Inicializando robô para tenant ${session.tenant_id} (Status DB: ${session.status}, Pasta em Disco: ${hasSessionDir})...`);
+        await startWorkerForTenant(session.tenant_id, session.id, session.is_active !== false, session.phone_number);
+        // Stagger de 800ms para suavizar a carga de CPU da VM durante o restart
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      }
     }
   } else {
-    console.log('[Orchestrator] Nenhum WhatsApp conectado previamente. Aguardando solicitações no banco...');
+    console.log('[Orchestrator] Nenhum WhatsApp ativo previamente. Aguardando solicitações no banco...');
   }
 
   // 2. Escuta global de alterações na tabela whatsapp_sessions para todos os tenants
@@ -99,6 +106,7 @@ async function main() {
         console.log(`[Orchestrator] Evento de sessão [tenant: ${session.tenant_id}]: status = ${session.status}, is_active = ${session.is_active}`);
 
         if (session.is_active === false) {
+          console.log(`[Orchestrator] Automação desativada pelo prestador [tenant: ${session.tenant_id}]. Pausando escuta...`);
           const worker = activeWorkers.get(session.tenant_id);
           if (worker) {
             worker.setIsActive(false);
@@ -106,7 +114,7 @@ async function main() {
           return;
         }
 
-        if (session.status === 'DISCONNECTED_NEED_QR' || session.status === 'CONNECTED') {
+        if (session.status === 'DISCONNECTED_NEED_QR' || session.status === 'CONNECTED' || session.status === 'AUTHENTICATING') {
           const existingWorker = activeWorkers.get(session.tenant_id);
           if (
             existingWorker &&
@@ -122,8 +130,17 @@ async function main() {
 
           await startWorkerForTenant(session.tenant_id, session.id, true, session.phone_number);
         } else if (session.status === 'DISCONNECTED') {
-          console.log(`[Orchestrator] Sessão desconectada/pausada para tenant ${session.tenant_id}. Encerrando worker inativo...`);
-          await stopWorkerForTenant(session.tenant_id);
+          // NUNCA encerrar o worker de um tenant ativo se ele possui sessão salva em disco
+          const authDataPath = process.env.WWEBJS_AUTH_PATH || path.resolve(process.cwd(), '.wwebjs_auth');
+          const sessionDir = path.join(authDataPath, `session-tenant_${session.tenant_id}`);
+          const hasSessionDir = fs.existsSync(sessionDir);
+
+          if (!hasSessionDir) {
+            console.log(`[Orchestrator] Sessão desconectada e sem pasta em disco para tenant ${session.tenant_id}. Encerrando worker...`);
+            await stopWorkerForTenant(session.tenant_id);
+          } else {
+            console.log(`[Orchestrator] Status DISCONNECTED recebido para tenant ${session.tenant_id}, mas mantendo worker rodando em segundo plano por possuir pasta em disco.`);
+          }
         }
       }
     )

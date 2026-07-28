@@ -34,24 +34,6 @@ function purgeSessionDir(tenantId: string): void {
   }
 }
 
-function cleanUnauthenticatedSessionDir(tenantId: string): void {
-  try {
-    const authDataPath = process.env.WWEBJS_AUTH_PATH || path.resolve(process.cwd(), '.wwebjs_auth');
-    const sessionDir = path.join(authDataPath, `session-tenant_${tenantId}`);
-
-    if (fs.existsSync(sessionDir)) {
-      // Se não há pasta de sessão autenticada preservada (session), removemos os dados temporários corrompidos
-      const hasSavedAuth = fs.existsSync(path.join(sessionDir, 'session'));
-      if (!hasSavedAuth) {
-        console.log(`[Worker] Limpando dados de armazenamento temporários (IndexedDB) em: ${sessionDir}`);
-        purgeSessionDir(tenantId);
-      }
-    }
-  } catch (err: any) {
-    console.warn(`[Worker] Aviso ao limpar pasta temporária da sessão: ${err?.message}`);
-  }
-}
-
 export class WhatsAppWorker {
   private client: Client;
   private scraper: VeloxScraper;
@@ -82,9 +64,6 @@ export class WhatsAppWorker {
       'https:\\/\\/prestador\\.veloxcontactcenter\\.com\\.br\\/prestador\\/ConvitePrestador\\/VisualizarConvite\\?ChaveConvite=[a-f0-9\\-]+';
     this.inviteRegex = new RegExp(targetRegexPattern || process.env.TARGET_REGEX || defaultPattern, 'i');
     this.scraper = new VeloxScraper(parseInt(process.env.HTTP_TIMEOUT || '5000', 10));
-
-    // Limpa a pasta temporária de sessão caso ela contenha IndexedDB corrompido de tentativa frustrada
-    cleanUnauthenticatedSessionDir(tenantId);
 
     const puppeteerConfig: any = {
       headless: 'new',
@@ -264,17 +243,7 @@ export class WhatsAppWorker {
       return pairingCode;
     } catch (pairErr: any) {
       const errMsg = pairErr?.message || String(pairErr || 't');
-      console.error('[Worker] Erro ao solicitar Código de Pareamento sob demanda:', errMsg);
-
-      try {
-        console.warn(`[Worker] Recarregando navegador e limpando sessão desautorizada do tenant ${this.tenantId} para restaurar quadro Chromium...`);
-        this.qrCount = 0;
-        await this.stop();
-        purgeSessionDir(this.tenantId);
-        await this.start();
-      } catch (reinitErr: any) {
-        console.error('[Worker] Erro ao re-inicializar cliente WhatsApp:', reinitErr.message);
-      }
+      console.error('[Worker] Aviso ao solicitar Código de Pareamento sob demanda:', errMsg);
       return null;
     }
   }
@@ -286,25 +255,7 @@ export class WhatsAppWorker {
       console.log(`[Worker] Geração de autenticação #${this.qrCount}/${this.maxQrAttempts} recebida para tenant ${this.tenantId}`);
 
       if (this.qrCount > this.maxQrAttempts) {
-        console.warn(`[Worker Anti-Spam] Limite de renovações de QR Code atingido (${this.qrCount}/${this.maxQrAttempts}) para tenant ${this.tenantId}. Encerrando robô para economizar recursos.`);
-        await updateSessionStatus(
-          this.supabase,
-          this.sessionId,
-          'DISCONNECTED',
-          null,
-          'vps-worker-01',
-          null,
-          null
-        );
-
-        await recordSystemLog(this.supabase, {
-          tenant_id: this.tenantId,
-          level: 'WARN',
-          event_type: 'QR_TIMEOUT_PAUSE',
-          message: 'Renovação de QR Code desativada por inatividade para preservar servidor. Clique em Gerar QR Code no painel.',
-        });
-
-        await this.stop();
+        console.warn(`[Worker Anti-Spam] Limite de renovações de QR Code atingido (${this.qrCount}/${this.maxQrAttempts}) para tenant ${this.tenantId}. Pausando envio de novos QR codes para o banco...`);
         return;
       }
 
@@ -445,14 +396,27 @@ export class WhatsAppWorker {
       }, backoffDelayMs);
     });
 
-    // Escuta de mensagens em tempo real
-    this.client.on('message', async (msg) => {
-      if (!msg.body) return;
+    // Escuta de mensagens em tempo real com deduplicação e logs detalhados
+    const processedMsgIds = new Set<string>();
+
+    const processIncomingMessage = async (msg: any) => {
+      if (!msg || !msg.body) return;
+
+      const msgId = msg.id?._serialized || `${msg.from}_${msg.timestamp}`;
+      if (processedMsgIds.has(msgId)) return;
+      processedMsgIds.add(msgId);
+
+      if (processedMsgIds.size > 500) {
+        const firstKey = Array.from(processedMsgIds)[0];
+        processedMsgIds.delete(firstKey);
+      }
+
+      console.log(`[WhatsApp Message Received] [Tenant: ${this.tenantId}] De: ${msg.from} | Conteúdo: ${msg.body.slice(0, 100)}`);
 
       const match = msg.body.match(this.inviteRegex);
       if (match) {
         const targetUrl = match[0];
-        console.log(`[Worker] Convite capturado no WhatsApp: ${targetUrl}`);
+        console.log(`[Worker] 🎉 Convite Velox capturado no WhatsApp: ${targetUrl}`);
 
         // 1. Verificação do botão LIGADO / PAUSADO
         if (!this.isActive) {
@@ -555,7 +519,10 @@ export class WhatsAppWorker {
           console.error('[Worker] Erro ao verificar capacidade da frota:', err.message);
         }
       }
-    });
+    };
+
+    this.client.on('message', processIncomingMessage);
+    this.client.on('message_create', processIncomingMessage);
   }
 
   public async start(): Promise<void> {
