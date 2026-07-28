@@ -251,13 +251,29 @@ export class WhatsAppWorker {
   private setupListeners(): void {
     // Evento de geração de autenticação (QR Code ou Pairing Code)
     this.client.on('qr', async (qrText: string) => {
+      // Se a sessão já está autenticada, ignora qualquer evento residual de QR code
+      if (this.client.info && this.client.info.wid) return;
+
       this.qrCount++;
-      console.log(`[Worker] Geração de autenticação #${this.qrCount}/${this.maxQrAttempts} recebida para tenant ${this.tenantId}`);
 
       if (this.qrCount > this.maxQrAttempts) {
-        console.warn(`[Worker Anti-Spam] Limite de renovações de QR Code atingido (${this.qrCount}/${this.maxQrAttempts}) para tenant ${this.tenantId}. Pausando envio de novos QR codes para o banco...`);
+        if (this.qrCount === this.maxQrAttempts + 1) {
+          console.warn(`[Worker Anti-Spam] Limite de ${this.maxQrAttempts} renovações de QR Code atingido para tenant ${this.tenantId}. Encerrando navegador inativo...`);
+          await updateSessionStatus(
+            this.supabase,
+            this.sessionId,
+            'DISCONNECTED',
+            null,
+            'vps-worker-01',
+            null,
+            null
+          );
+          await this.stop();
+        }
         return;
       }
+
+      console.log(`[Worker] Geração de autenticação #${this.qrCount}/${this.maxQrAttempts} recebida para tenant ${this.tenantId}`);
 
       try {
         const qrDataUrl = await QRCode.toDataURL(qrText);
@@ -396,13 +412,19 @@ export class WhatsAppWorker {
       }, backoffDelayMs);
     });
 
-    // Escuta de mensagens em tempo real com deduplicação e logs detalhados
+    // Escuta de mensagens em tempo real com deduplicação e filtro silencioso de convites
     const processedMsgIds = new Set<string>();
 
     const processIncomingMessage = async (msg: any) => {
       if (!msg || !msg.body) return;
 
-      const msgId = msg.id?._serialized || `${msg.from}_${msg.timestamp}`;
+      // Filtra mensagens ruidosas de grupos, status e newsletters para manter o terminal 100% limpo
+      const sender = msg.from || '';
+      if (sender.endsWith('@g.us') || sender.endsWith('@broadcast') || sender.endsWith('@newsletter')) {
+        return;
+      }
+
+      const msgId = msg.id?._serialized || `${sender}_${msg.timestamp}`;
       if (processedMsgIds.has(msgId)) return;
       processedMsgIds.add(msgId);
 
@@ -411,12 +433,10 @@ export class WhatsAppWorker {
         processedMsgIds.delete(firstKey);
       }
 
-      console.log(`[WhatsApp Message Received] [Tenant: ${this.tenantId}] De: ${msg.from} | Conteúdo: ${msg.body.slice(0, 100)}`);
-
       const match = msg.body.match(this.inviteRegex);
       if (match) {
         const targetUrl = match[0];
-        console.log(`[Worker] 🎉 Convite Velox capturado no WhatsApp: ${targetUrl}`);
+        console.log(`[Worker] 🎉 Convite Velox capturado no WhatsApp! [Tenant: ${this.tenantId}] Link: ${targetUrl}`);
 
         // 1. Verificação do botão LIGADO / PAUSADO
         if (!this.isActive) {
