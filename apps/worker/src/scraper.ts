@@ -124,6 +124,20 @@ export class VeloxScraper {
         const bodyText = $('body').text().replace(/\s+/g, ' ').trim();
         debugInfo.bodyTextSnippet = bodyText.slice(0, 600);
 
+        // CHECAGEM ESTRITA NO GET: Se o HTML contiver avisos explícitos de recusa/já aceito, cancela imediatamente!
+        if (bodyText.includes('Convite já aceito por outro prestador') || bodyText.includes('ja aceito por outro prestador')) {
+          console.warn(`[Scraper] 🛑 Velox informou no HTML GET: "Convite já aceito por outro prestador"`);
+          throw new NonRetryableError('Convite já aceito por outro prestador!');
+        }
+        if (bodyText.includes('Convite expirado') || bodyText.includes('Convite encerrado') || bodyText.includes('Convite cancelado')) {
+          console.warn(`[Scraper] 🛑 Velox informou no HTML GET: "Convite indisponível/encerrado/cancelado"`);
+          throw new NonRetryableError(`Convite indisponível no Velox (${pageTitle}): ${bodyText.slice(0, 150)}`);
+        }
+        if (bodyText.includes('Login') && (bodyText.includes('Senha') || bodyText.includes('Entrar')) && !bodyText.includes('VisualizarConvite')) {
+          console.warn(`[Scraper] 🛑 Velox redirecionou para tela de Login`);
+          throw new NonRetryableError(`Página de convite redirecionou para Login do Velox (Autenticação exigida). Título: ${pageTitle}`);
+        }
+
         debugInfo.failedStep = 'FORM_EXTRACTION';
 
         const allInputs: Record<string, string> = {};
@@ -192,26 +206,6 @@ export class VeloxScraper {
           chaveConvite = parsedUrl.searchParams.get('ChaveConvite') || '';
         } catch {
           // Ignore
-        }
-
-        // Se encontrou inputs VÁLIDOS do formulário, prossegue com o envio do aceite!
-        const hasValidFormInputs = Boolean(id || idAtendimentoConvite || (chaveConvite && Object.keys(allInputs).length > 0));
-
-        // Verificação de avisos/recusas na tela SOMENTE se NÃO foram encontrados campos de formulário válidos
-        if (!hasValidFormInputs) {
-          console.warn(`[Scraper] Form sem inputs válidos. Analisando texto da página (${pageTitle})...`);
-          if (bodyText.includes('Convite já aceito por outro prestador')) {
-            console.warn(`[Scraper] Velox retornou no HTML: "Convite já aceito por outro prestador"`);
-            throw new NonRetryableError('Convite já aceito por outro prestador!');
-          }
-          if (bodyText.includes('Convite expirado') || bodyText.includes('Convite encerrado') || bodyText.includes('Convite cancelado')) {
-            console.warn(`[Scraper] Velox retornou no HTML: "Convite indisponível/encerrado/cancelado"`);
-            throw new NonRetryableError(`Convite indisponível no Velox (${pageTitle}): ${bodyText.slice(0, 150)}`);
-          }
-          if (bodyText.includes('Login') && (bodyText.includes('Senha') || bodyText.includes('Entrar'))) {
-            console.warn(`[Scraper] Velox retornou tela de Login (Autenticação exigida)`);
-            throw new NonRetryableError(`Página de convite redirecionou para Login do Velox (Autenticação exigida). Título: ${pageTitle}`);
-          }
         }
 
         // Validação: exige Id numérico ou ChaveConvite
@@ -283,6 +277,24 @@ export class VeloxScraper {
           postMs: tPost,
           totalMs,
         };
+
+        // ANALISA A RESPOSTA DO POST: Se o servidor Velox respondeu que já foi aceito ou encerrado no POST
+        const postResponseBody = typeof responsePost.data === 'string'
+          ? responsePost.data
+          : JSON.stringify(responsePost.data || '');
+        const lowerPostBody = postResponseBody.toLowerCase();
+
+        const isPostAlreadyTakenOrExpired =
+          lowerPostBody.includes('já aceito') ||
+          lowerPostBody.includes('ja aceito') ||
+          lowerPostBody.includes('expirado') ||
+          lowerPostBody.includes('encerrado') ||
+          lowerPostBody.includes('outro prestador');
+
+        if (isPostAlreadyTakenOrExpired) {
+          console.warn(`[Scraper] 🛑 Velox respondeu no HTTP POST que o convite já foi aceito por outro prestador! Resposta: "${postResponseBody.slice(0, 200)}"`);
+          throw new NonRetryableError('Convite já aceito por outro prestador!');
+        }
 
         const isSuccess = responsePost.status >= 200 && responsePost.status < 300;
 
