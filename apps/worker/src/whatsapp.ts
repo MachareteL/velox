@@ -1,18 +1,22 @@
-import { Client, LocalAuth } from 'whatsapp-web.js';
-import QRCode from 'qrcode';
-import fs from 'fs';
-import { SupabaseClient } from '@supabase/supabase-js';
-import { recordCapturedCall, recordSystemLog, updateSessionStatus } from '@velox/database';
-import { VeloxScraper } from './scraper';
-import { calcularPrevia } from './calculator';
-
-import path from 'path';
+import { Client, LocalAuth } from "whatsapp-web.js";
+import QRCode from "qrcode";
+import fs from "fs";
+import { SupabaseClient } from "@supabase/supabase-js";
+import {
+  recordCapturedCall,
+  recordSystemLog,
+  updateSessionStatus,
+} from "@velox/database";
+import { VeloxScraper } from "./scraper";
+import { calcularPrevia } from "./calculator";
+import path from "path";
 
 function getWindowsChromePath(): string | null {
   const paths = [
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    (process.env.LOCALAPPDATA || '') + '\\Google\\Chrome\\Application\\chrome.exe',
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+    (process.env.LOCALAPPDATA || "") +
+      "\\Google\\Chrome\\Application\\chrome.exe",
   ];
   for (const p of paths) {
     if (p && fs.existsSync(p)) return p;
@@ -20,14 +24,45 @@ function getWindowsChromePath(): string | null {
   return null;
 }
 
+async function safelyCloseAndKillBrowser(client: Client | null): Promise<void> {
+  if (!client) return;
+  try {
+    const pupBrowser = (client as any).pupBrowser;
+    const pid = pupBrowser?.process()?.pid;
+
+    try {
+      await client.destroy();
+    } catch (_) {}
+
+    if (pid) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch (_) {}
+    }
+  } catch (err: any) {
+    console.warn(
+      `[Worker] Aviso ao encerrar processo do navegador: ${err?.message}`,
+    );
+  }
+}
+
 function purgeSessionDir(tenantId: string): void {
   try {
-    const authDataPath = process.env.WWEBJS_AUTH_PATH || path.resolve(process.cwd(), '.wwebjs_auth');
+    const authDataPath =
+      process.env.WWEBJS_AUTH_PATH ||
+      path.resolve(process.cwd(), ".wwebjs_auth");
     const sessionDir = path.join(authDataPath, `session-tenant_${tenantId}`);
 
     if (fs.existsSync(sessionDir)) {
-      console.log(`[Worker] Expurgando diretório de sessão desautorizada/desconectada: ${sessionDir}`);
-      fs.rmSync(sessionDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+      console.log(
+        `[Worker] Expurgando diretório de sessão desautorizada/desconectada: ${sessionDir}`,
+      );
+      fs.rmSync(sessionDir, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 300,
+      });
     }
   } catch (err: any) {
     console.warn(`[Worker] Erro ao expurgar pasta de sessão: ${err?.message}`);
@@ -35,88 +70,114 @@ function purgeSessionDir(tenantId: string): void {
 }
 
 export class WhatsAppWorker {
-  private client: Client;
+  private client!: Client;
   private scraper: VeloxScraper;
   private inviteRegex: RegExp;
   private isActive: boolean = true;
   private running: boolean = false;
   private starting: boolean = false;
+  private isConnected: boolean = false;
 
   // Controle Anti-Spam de QR Code e Recursos da VM
   private qrCount: number = 0;
   private maxQrAttempts: number = 8;
+  private sessionStartTimestamp: number = 0;
 
   // Controle Anti-Ban / Anti-Spam de Reconexão
   private reconnectAttempts: number = 0;
-  private maxReconnectAttempts: number = 3;
+  private maxReconnectAttempts: number = 5;
   private reconnectCooldownWindowMs: number = 10 * 60 * 1000;
   private lastReconnectTime: number = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private authTimeoutTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private tenantId: string,
     private sessionId: string,
     private supabase: SupabaseClient,
     targetRegexPattern?: string,
-    private phoneNumber?: string | null
+    private phoneNumber?: string | null,
   ) {
     const defaultPattern =
-      'https:\\/\\/prestador\\.veloxcontactcenter\\.com\\.br\\/prestador\\/ConvitePrestador\\/VisualizarConvite\\?ChaveConvite=[a-f0-9\\-]+';
-    this.inviteRegex = new RegExp(targetRegexPattern || process.env.TARGET_REGEX || defaultPattern, 'i');
-    this.scraper = new VeloxScraper(parseInt(process.env.HTTP_TIMEOUT || '5000', 10));
+      "https:\\/\\/prestador\\.veloxcontactcenter\\.com\\.br\\/prestador\\/ConvitePrestador\\/VisualizarConvite\\?ChaveConvite=[a-f0-9\\-]+";
+    this.inviteRegex = new RegExp(
+      targetRegexPattern || process.env.TARGET_REGEX || defaultPattern,
+      "i",
+    );
+    this.scraper = new VeloxScraper(
+      parseInt(process.env.HTTP_TIMEOUT || "5000", 10),
+    );
 
+    this.client = this.createClient();
+  }
+
+  private createClient(): Client {
     const puppeteerConfig: any = {
-      headless: 'new',
+      headless: "new",
       args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu',
-        '--disable-session-crashed-bubble',
-        '--disable-infobars',
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-accelerated-2d-canvas",
+        "--no-first-run",
+        "--no-zygote",
+        "--disable-gpu",
+        "--disable-session-crashed-bubble",
+        "--disable-infobars",
       ],
     };
 
-    const systemChromePath = getWindowsChromePath() || process.env.PUPPETEER_EXECUTABLE_PATH;
+    const systemChromePath =
+      getWindowsChromePath() || process.env.PUPPETEER_EXECUTABLE_PATH;
     if (systemChromePath) {
-      console.log(`[Worker] Utilizando navegador Chrome instalado em: ${systemChromePath}`);
+      console.log(
+        `[Worker] Utilizando navegador Chrome instalado em: ${systemChromePath}`,
+      );
       puppeteerConfig.executablePath = systemChromePath;
     }
 
-    const authDataPath = process.env.WWEBJS_AUTH_PATH || path.resolve(process.cwd(), '.wwebjs_auth');
+    const authDataPath =
+      process.env.WWEBJS_AUTH_PATH ||
+      path.resolve(process.cwd(), ".wwebjs_auth");
 
-    this.client = new Client({
+    const client = new Client({
       authStrategy: new LocalAuth({
-        clientId: `tenant_${tenantId}`,
+        clientId: `tenant_${this.tenantId}`,
         dataPath: authDataPath,
       }),
       webVersionCache: {
-        type: 'remote',
-        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html',
+        type: "remote",
+        remotePath:
+          "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html",
       },
       puppeteer: puppeteerConfig,
     });
 
-    this.setupListeners();
+    this.setupListenersForClient(client);
+    return client;
   }
 
   public setIsActive(active: boolean): void {
     const previous = this.isActive;
     this.isActive = active;
     if (previous !== active) {
-      console.log(`[Worker] Estado da automação alterado para tenant ${this.tenantId}: ${active ? 'LIGADO' : 'PAUSADO'}`);
+      console.log(
+        `[Worker] Estado da automação alterado para tenant ${this.tenantId}: ${active ? "LIGADO" : "PAUSADO"}`,
+      );
     }
   }
 
   public async restartForFreshAuth(phoneNumber?: string | null): Promise<void> {
-    console.log(`[Worker] Forçando reinicialização limpa de autenticação para tenant ${this.tenantId}...`);
-    this.phoneNumber = phoneNumber !== undefined ? phoneNumber : this.phoneNumber;
+    console.log(
+      `[Worker] Forçando reinicialização limpa de autenticação para tenant ${this.tenantId}...`,
+    );
+    this.phoneNumber =
+      phoneNumber !== undefined ? phoneNumber : this.phoneNumber;
     this.qrCount = 0;
     await this.stop();
+    await new Promise((resolve) => setTimeout(resolve, 1000));
     purgeSessionDir(this.tenantId);
+    this.client = this.createClient();
     await this.start();
   }
 
@@ -128,28 +189,31 @@ export class WhatsAppWorker {
     return this.running;
   }
 
-  private async executePairingCodeWithRetry(phoneNumber: string): Promise<string> {
-    const digits = phoneNumber.replace(/\D/g, '');
+  private async executePairingCodeWithRetry(
+    phoneNumber: string,
+  ): Promise<string> {
+    const digits = phoneNumber.replace(/\D/g, "");
 
     // Garante que números do Brasil sempre comecem com DDI 55
     let fullPhoneWithDdi = digits;
-    if (!fullPhoneWithDdi.startsWith('55') && (fullPhoneWithDdi.length === 10 || fullPhoneWithDdi.length === 11)) {
+    if (
+      !fullPhoneWithDdi.startsWith("55") &&
+      (fullPhoneWithDdi.length === 10 || fullPhoneWithDdi.length === 11)
+    ) {
       fullPhoneWithDdi = `55${fullPhoneWithDdi}`;
     }
 
     const formatsToTry: string[] = [];
-    if (fullPhoneWithDdi.startsWith('55')) {
+    if (fullPhoneWithDdi.startsWith("55")) {
       if (fullPhoneWithDdi.length === 13) {
-        // Ex: 5519983648849 (13 dígitos com o 9º dígito)
         formatsToTry.push(fullPhoneWithDdi);
-        // Ex: 551983648849 (12 dígitos sem o 9º dígito)
-        const withoutNine = '55' + fullPhoneWithDdi.slice(2, 4) + fullPhoneWithDdi.slice(5);
+        const withoutNine =
+          "55" + fullPhoneWithDdi.slice(2, 4) + fullPhoneWithDdi.slice(5);
         if (!formatsToTry.includes(withoutNine)) formatsToTry.push(withoutNine);
       } else if (fullPhoneWithDdi.length === 12) {
-        // Ex: 551983648849 (12 dígitos sem o 9º dígito)
         formatsToTry.push(fullPhoneWithDdi);
-        // Ex: 5519983648849 (13 dígitos com o 9º dígito)
-        const withNine = '55' + fullPhoneWithDdi.slice(2, 4) + '9' + fullPhoneWithDdi.slice(4);
+        const withNine =
+          "55" + fullPhoneWithDdi.slice(2, 4) + "9" + fullPhoneWithDdi.slice(4);
         if (!formatsToTry.includes(withNine)) formatsToTry.push(withNine);
       } else {
         formatsToTry.push(fullPhoneWithDdi);
@@ -158,122 +222,184 @@ export class WhatsAppWorker {
       formatsToTry.push(fullPhoneWithDdi);
     }
 
-    console.log(`[Worker Pairing] Formatos de telefone com DDI internacional a testar:`, formatsToTry);
+    console.log(
+      `[Worker Pairing] Formatos de telefone com DDI internacional a testar:`,
+      formatsToTry,
+    );
 
     const pupPage = (this.client as any).pupPage;
 
     for (let index = 0; index < formatsToTry.length; index++) {
       const phoneCandidate = formatsToTry[index];
 
-      // Se não for o primeiro candidato, recarrega a página Chromium para redefinir o estado ALT_DEVICE_LINKING
       if (index > 0 && pupPage) {
         try {
-          console.log(`[Worker Pairing] Recarregando página Chromium para redefinir estado de pareamento...`);
+          console.log(
+            `[Worker Pairing] Recarregando página Chromium para redefinir estado de pareamento...`,
+          );
           await pupPage.evaluate(() => location.reload());
           await new Promise((resolve) => setTimeout(resolve, 4000));
         } catch (reloadErr: any) {
-          console.warn(`[Worker Pairing] Erro ao recarregar página: ${reloadErr?.message}`);
+          console.warn(
+            `[Worker Pairing] Erro ao recarregar página: ${reloadErr?.message}`,
+          );
         }
       } else {
         await new Promise((resolve) => setTimeout(resolve, 2000));
       }
 
-      // Aguarda o WhatsApp Web carregar o utilitário de pareamento no navegador
       if (pupPage) {
         try {
           await pupPage.waitForFunction(
-            () => (window as any).AuthStore && (window as any).AuthStore.PairingCodeLinkUtils !== undefined,
-            { timeout: 8000 }
+            () =>
+              (window as any).AuthStore &&
+              (window as any).AuthStore.PairingCodeLinkUtils !== undefined,
+            { timeout: 8000 },
           );
         } catch (_) {
-          console.warn('[Worker Pairing] AuthStore.PairingCodeLinkUtils não respondeu em 8s. Tentando avançar...');
+          console.warn(
+            "[Worker Pairing] AuthStore.PairingCodeLinkUtils não respondeu em 8s. Tentando avançar...",
+          );
         }
       }
 
       try {
-        console.log(`[Worker Pairing] Solicitando Código de Pareamento (formato DDI: ${phoneCandidate})...`);
-        const code = await (this.client as any).requestPairingCode(phoneCandidate);
-        if (code && typeof code === 'string' && code.length >= 6) {
-          console.log(`[Worker Pairing] ✨ Código de Pareamento VÁLIDO gerado com sucesso (${phoneCandidate}): ${code}`);
+        console.log(
+          `[Worker Pairing] Solicitando Código de Pareamento (formato DDI: ${phoneCandidate})...`,
+        );
+        const code = await (this.client as any).requestPairingCode(
+          phoneCandidate,
+        );
+        if (code && typeof code === "string" && code.length >= 6) {
+          console.log(
+            `[Worker Pairing] ✨ Código de Pareamento VÁLIDO gerado com sucesso (${phoneCandidate}): ${code}`,
+          );
           return code;
         }
       } catch (err: any) {
-        const errMsg = err?.message || String(err || 't');
-        console.warn(`[Worker Pairing] Erro com formato ${phoneCandidate}: (${errMsg})`);
+        const errMsg = err?.message || String(err || "t");
+        console.warn(
+          `[Worker Pairing] Erro com formato ${phoneCandidate}: (${errMsg})`,
+        );
       }
     }
 
-    throw new Error('Não foi possível gerar o código por telefone no momento. Tente novamente em instantes.');
+    throw new Error(
+      "Não foi possível gerar o código por telefone no momento. Tente novamente em instantes.",
+    );
   }
 
-  public async requestPairingCodeOnDemand(phoneNumber: string): Promise<string | null> {
-    const cleanPhone = phoneNumber.replace(/\D/g, '');
+  public async requestPairingCodeOnDemand(
+    phoneNumber: string,
+  ): Promise<string | null> {
+    const cleanPhone = phoneNumber.replace(/\D/g, "");
     this.phoneNumber = cleanPhone;
     this.qrCount = 0;
 
     if (!this.running) {
-      console.log(`[Worker] Robô estava pausado/parado. Reiniciando cliente para tenant ${this.tenantId}...`);
+      console.log(
+        `[Worker] Robô estava pausado/parado. Reiniciando cliente para tenant ${this.tenantId}...`,
+      );
       await this.start();
       return null;
     }
 
     try {
-      console.log(`[Worker] Solicitando Código de Pareamento sob demanda para número ${cleanPhone}...`);
+      console.log(
+        `[Worker] Solicitando Código de Pareamento sob demanda para número ${cleanPhone}...`,
+      );
       const pairingCode = await this.executePairingCodeWithRetry(cleanPhone);
-      console.log(`[Worker] Código de Pareamento gerado sob demanda: ${pairingCode}`);
+      console.log(
+        `[Worker] Código de Pareamento gerado sob demanda: ${pairingCode}`,
+      );
 
       await updateSessionStatus(
         this.supabase,
         this.sessionId,
-        'DISCONNECTED_NEED_QR',
+        "DISCONNECTED_NEED_QR",
         null,
-        'vps-worker-01',
+        "vps-worker-01",
         pairingCode,
-        cleanPhone
+        cleanPhone,
       );
 
       await recordSystemLog(this.supabase, {
         tenant_id: this.tenantId,
-        level: 'INFO',
-        event_type: 'PAIRING_CODE_GENERATED',
+        level: "INFO",
+        event_type: "PAIRING_CODE_GENERATED",
         message: `Código de Pareamento por telefone gerado com sucesso: ${pairingCode}`,
         details: { phoneNumber: cleanPhone, pairingCode },
       });
 
       return pairingCode;
     } catch (pairErr: any) {
-      const errMsg = pairErr?.message || String(pairErr || 't');
-      console.error('[Worker] Aviso ao solicitar Código de Pareamento sob demanda:', errMsg);
+      const errMsg = pairErr?.message || String(pairErr || "t");
+      console.error(
+        "[Worker] Aviso ao solicitar Código de Pareamento sob demanda:",
+        errMsg,
+      );
+
+      await recordSystemLog(this.supabase, {
+        tenant_id: this.tenantId,
+        level: "ERROR",
+        event_type: "PAIRING_CODE_ERROR",
+        message: `Falha ao gerar código por telefone: ${errMsg}`,
+        details: { phoneNumber: cleanPhone, error: errMsg },
+      });
+
       return null;
     }
   }
 
-  private setupListeners(): void {
+  private setupListenersForClient(client: Client): void {
     // Evento de geração de autenticação (QR Code ou Pairing Code)
-    this.client.on('qr', async (qrText: string) => {
+    client.on("qr", async (qrText: string) => {
       // Se a sessão já está autenticada, ignora qualquer evento residual de QR code
-      if (this.client.info && this.client.info.wid) return;
+      if (client.info && client.info.wid) return;
+
+      // Proteção contra falsos disparos de QR durante restauração de sessão em disco:
+      const authDataPath =
+        process.env.WWEBJS_AUTH_PATH ||
+        path.resolve(process.cwd(), ".wwebjs_auth");
+      const sessionDir = path.join(
+        authDataPath,
+        `session-tenant_${this.tenantId}`,
+      );
+      const hasDiskSession = fs.existsSync(sessionDir);
+      const elapsedSinceStart = Date.now() - this.sessionStartTimestamp;
+
+      if (hasDiskSession && elapsedSinceStart < 15000 && this.qrCount === 0) {
+        console.log(
+          `[Worker] QR Code detectado durante restauração de sessão para tenant ${this.tenantId}. Aguardando autenticação local...`,
+        );
+        this.qrCount++;
+        return;
+      }
 
       this.qrCount++;
 
       if (this.qrCount > this.maxQrAttempts) {
         if (this.qrCount === this.maxQrAttempts + 1) {
-          console.warn(`[Worker Anti-Spam] Limite de ${this.maxQrAttempts} renovações de QR Code atingido para tenant ${this.tenantId}. Encerrando navegador inativo...`);
+          console.warn(
+            `[Worker Anti-Spam] Limite de ${this.maxQrAttempts} renovações de QR Code atingido para tenant ${this.tenantId}. Encerrando navegador inativo...`,
+          );
           await updateSessionStatus(
             this.supabase,
             this.sessionId,
-            'DISCONNECTED',
+            "DISCONNECTED",
             null,
-            'vps-worker-01',
+            "vps-worker-01",
             null,
-            null
+            null,
           );
           await this.stop();
         }
         return;
       }
 
-      console.log(`[Worker] Geração de autenticação #${this.qrCount}/${this.maxQrAttempts} recebida para tenant ${this.tenantId}`);
+      console.log(
+        `[Worker] Geração de autenticação #${this.qrCount}/${this.maxQrAttempts} recebida para tenant ${this.tenantId}`,
+      );
 
       try {
         const qrDataUrl = await QRCode.toDataURL(qrText);
@@ -281,75 +407,151 @@ export class WhatsAppWorker {
         await updateSessionStatus(
           this.supabase,
           this.sessionId,
-          'DISCONNECTED_NEED_QR',
+          "DISCONNECTED_NEED_QR",
           qrDataUrl,
-          'vps-worker-01',
+          "vps-worker-01",
           null,
-          null
+          null,
         );
 
         await recordSystemLog(this.supabase, {
           tenant_id: this.tenantId,
-          level: 'INFO',
-          event_type: 'QR_GENERATED',
-          message: 'Novo Código de Conexão (QR Code) gerado.',
+          level: "INFO",
+          event_type: "QR_GENERATED",
+          message: "Novo Código de Conexão (QR Code) gerado.",
         });
       } catch (err: any) {
-        console.error('[Worker] Erro ao converter QR Code:', err.message);
+        console.error("[Worker] Erro ao converter QR Code:", err.message);
       }
     });
 
     // Evento disparado no exato instante em que o celular aprova o QR Code ou Pairing Code
-    this.client.on('authenticated', async () => {
-      console.log(`[Worker] ✨ Conexão aprovada pelo celular para tenant ${this.tenantId}! Inicializando automação...`);
+    client.on("authenticated", async () => {
+      console.log(
+        `[Worker] ✨ Conexão aprovada pelo celular para tenant ${this.tenantId}! Inicializando automação...`,
+      );
 
       await updateSessionStatus(
         this.supabase,
         this.sessionId,
-        'AUTHENTICATING',
+        "AUTHENTICATING",
         null,
-        'vps-worker-01',
+        "vps-worker-01",
         null,
-        this.phoneNumber || null
+        this.phoneNumber || null,
       );
 
       await recordSystemLog(this.supabase, {
         tenant_id: this.tenantId,
-        level: 'INFO',
-        event_type: 'SESSION_AUTHENTICATED',
-        message: 'Código/QR Code lido no celular com sucesso! Inicializando a automação...',
+        level: "INFO",
+        event_type: "SESSION_AUTHENTICATED",
+        message:
+          "Código/QR Code lido no celular com sucesso! Inicializando a automação...",
       });
+
+      // Timer de segurança: Se 'ready' não disparar em 45 segundos após 'authenticated', reinicia o worker
+      if (this.authTimeoutTimer) clearTimeout(this.authTimeoutTimer);
+      this.authTimeoutTimer = setTimeout(async () => {
+        if (!this.isConnected) {
+          console.warn(
+            `[Worker] Timeout de 45s aguardando evento ready pós-autenticação para tenant ${this.tenantId}. Efetuando reinicialização limpa...`,
+          );
+          await this.stop();
+          await new Promise((res) => setTimeout(res, 1000));
+          this.client = this.createClient();
+          try {
+            await this.start();
+          } catch (err: any) {
+            console.error(
+              "[Worker] Erro ao reiniciar worker pós timeout de autenticação:",
+              err?.message,
+            );
+          }
+        }
+      }, 45000);
     });
 
     // Monitoramento do percentual de carregamento do WhatsApp Web
-    this.client.on('loading_screen', async (percent: number, message: string) => {
-      console.log(`[Worker] Carregando conversas do WhatsApp para tenant ${this.tenantId}: ${percent}% (${message})`);
+    client.on("loading_screen", async (percent: number, message: string) => {
+      console.log(
+        `[Worker] Carregando conversas do WhatsApp para tenant ${this.tenantId}: ${percent}% (${message})`,
+      );
     });
 
     // Evento de conexão pronta
-    this.client.on('ready', async () => {
-      console.log(`[Worker] WhatsApp Web conectado para tenant ${this.tenantId}`);
+    client.on("ready", async () => {
+      console.log(
+        `[Worker] WhatsApp Web conectado para tenant ${this.tenantId}`,
+      );
+      this.isConnected = true;
       this.reconnectAttempts = 0;
+
+      if (this.authTimeoutTimer) {
+        clearTimeout(this.authTimeoutTimer);
+        this.authTimeoutTimer = null;
+      }
 
       await updateSessionStatus(
         this.supabase,
         this.sessionId,
-        'CONNECTED',
+        "CONNECTED",
         null,
-        'vps-worker-01'
+        "vps-worker-01",
       );
 
       await recordSystemLog(this.supabase, {
         tenant_id: this.tenantId,
-        level: 'INFO',
-        event_type: 'SESSION_READY',
-        message: 'WhatsApp Web conectado e pronto para automação.',
+        level: "INFO",
+        event_type: "SESSION_READY",
+        message: "WhatsApp Web conectado e pronto para automação.",
       });
     });
 
+    // Evento de falha de autenticação (credenciais revogadas pelo WhatsApp)
+    client.on("auth_failure", async (msg: string) => {
+      console.warn(
+        `[Worker] Falha de autenticação (sessão revogada) para tenant ${this.tenantId}: ${msg}`,
+      );
+      this.isConnected = false;
+      this.qrCount = 0;
+      await this.stop();
+      await new Promise((res) => setTimeout(res, 1000));
+      purgeSessionDir(this.tenantId);
+
+      await updateSessionStatus(
+        this.supabase,
+        this.sessionId,
+        "DISCONNECTED_NEED_QR",
+        null,
+        "vps-worker-01",
+        null,
+        null,
+      );
+
+      await recordSystemLog(this.supabase, {
+        tenant_id: this.tenantId,
+        level: "WARN",
+        event_type: "AUTH_FAILURE",
+        message: `Sessão revogada pelo WhatsApp: ${msg}. Pasta de sessão expurgada com sucesso.`,
+      });
+
+      try {
+        this.client = this.createClient();
+        await this.start();
+      } catch (restartErr: any) {
+        console.error(
+          "[Worker] Erro ao reiniciar worker após auth_failure:",
+          restartErr?.message,
+        );
+      }
+    });
+
     // Evento de desconexão
-    this.client.on('disconnected', async (reason: string) => {
-      console.warn(`[Worker] WhatsApp desconectado (${reason}) para tenant ${this.tenantId}`);
+    client.on("disconnected", async (reason: string) => {
+      console.warn(
+        `[Worker] WhatsApp desconectado (${reason}) para tenant ${this.tenantId}`,
+      );
+      this.isConnected = false;
 
       const now = Date.now();
       if (now - this.lastReconnectTime > this.reconnectCooldownWindowMs) {
@@ -357,34 +559,42 @@ export class WhatsAppWorker {
       }
       this.lastReconnectTime = now;
 
-      // Se ocorreu logout explícito ou expiração de token no WhatsApp Web
-      if (reason === 'LOGOUT') {
-        console.warn(`[Worker] Logout explícito no celular detectado para tenant ${this.tenantId}. Expurgando pasta corrompida e reiniciando robô em estado limpo...`);
+      // Se ocorreu logout explícito no celular
+      if (reason === "LOGOUT") {
+        console.warn(
+          `[Worker] Logout explícito no celular detectado para tenant ${this.tenantId}. Expurgando pasta corrompida e reiniciando robô em estado limpo...`,
+        );
         this.qrCount = 0;
         await this.stop();
+        await new Promise((res) => setTimeout(res, 1000));
         purgeSessionDir(this.tenantId);
 
         await updateSessionStatus(
           this.supabase,
           this.sessionId,
-          'DISCONNECTED_NEED_QR',
+          "DISCONNECTED_NEED_QR",
           null,
-          'vps-worker-01',
+          "vps-worker-01",
           null,
-          null
+          null,
         );
 
         await recordSystemLog(this.supabase, {
           tenant_id: this.tenantId,
-          level: 'WARN',
-          event_type: 'SESSION_LOGOUT',
-          message: 'Sessão desconectada via WhatsApp (Logout). Pasta de sessão expurgada com sucesso.',
+          level: "WARN",
+          event_type: "SESSION_LOGOUT",
+          message:
+            "Sessão desconectada via WhatsApp (Logout). Pasta de sessão expurgada com sucesso.",
         });
 
         try {
+          this.client = this.createClient();
           await this.start();
         } catch (restartErr: any) {
-          console.error('[Worker] Erro ao reiniciar worker após logout:', restartErr?.message);
+          console.error(
+            "[Worker] Erro ao reiniciar worker após logout:",
+            restartErr?.message,
+          );
         }
         return;
       }
@@ -393,21 +603,36 @@ export class WhatsAppWorker {
       await updateSessionStatus(
         this.supabase,
         this.sessionId,
-        'DISCONNECTED',
+        "DISCONNECTED",
         null,
-        'vps-worker-01'
+        "vps-worker-01",
       );
 
       this.reconnectAttempts++;
-      const backoffDelayMs = Math.min(60000, Math.pow(2, this.reconnectAttempts) * 2000 + Math.floor(Math.random() * 1000));
-      console.log(`[Worker Reconnect] Agendando reconexão automática #${this.reconnectAttempts} em ${(backoffDelayMs / 1000).toFixed(1)}s...`);
+      const backoffDelayMs = Math.min(
+        60000,
+        Math.pow(2, this.reconnectAttempts) * 2000 +
+          Math.floor(Math.random() * 1000),
+      );
+      console.log(
+        `[Worker Reconnect] Agendando reconexão automática #${this.reconnectAttempts} em ${(backoffDelayMs / 1000).toFixed(1)}s...`,
+      );
 
       if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
       this.reconnectTimer = setTimeout(async () => {
         try {
-          await this.client.initialize();
+          console.log(
+            `[Worker Reconnect] Reiniciando cliente limpo para reconexão do tenant ${this.tenantId}...`,
+          );
+          await this.stop();
+          await new Promise((res) => setTimeout(res, 1000));
+          this.client = this.createClient();
+          await this.start();
         } catch (err: any) {
-          console.error('[Worker Reconnect] Erro ao reconectar sessão salva:', err.message);
+          console.error(
+            "[Worker Reconnect] Erro ao reconectar sessão salva:",
+            err.message,
+          );
         }
       }, backoffDelayMs);
     });
@@ -418,9 +643,12 @@ export class WhatsAppWorker {
     const processIncomingMessage = async (msg: any) => {
       if (!msg || !msg.body) return;
 
-      // Filtra mensagens ruidosas de grupos, status e newsletters para manter o terminal 100% limpo
-      const sender = msg.from || '';
-      if (sender.endsWith('@g.us') || sender.endsWith('@broadcast') || sender.endsWith('@newsletter')) {
+      const sender = msg.from || "";
+      if (
+        sender.endsWith("@g.us") ||
+        sender.endsWith("@broadcast") ||
+        sender.endsWith("@newsletter")
+      ) {
         return;
       }
 
@@ -436,38 +664,41 @@ export class WhatsAppWorker {
       const match = msg.body.match(this.inviteRegex);
       if (match) {
         const targetUrl = match[0];
-        console.log(`[Worker] 🎉 Convite Velox capturado no WhatsApp! [Tenant: ${this.tenantId}] Link: ${targetUrl}`);
+        console.log(
+          `[Worker] 🎉 Convite Velox capturado no WhatsApp! [Tenant: ${this.tenantId}] Link: ${targetUrl}`,
+        );
 
-        // 1. Verificação do botão LIGADO / PAUSADO
         if (!this.isActive) {
-          console.log(`[Worker] Automação pausada pelo prestador. Ignorando convite: ${targetUrl}`);
+          console.log(
+            `[Worker] Automação pausada pelo prestador. Ignorando convite: ${targetUrl}`,
+          );
           await recordSystemLog(this.supabase, {
             tenant_id: this.tenantId,
-            level: 'WARN',
-            event_type: 'AUTOMATION_PAUSED',
-            message: 'Convite recebido mas ignorado pois a automação está pausada pelo prestador.',
+            level: "WARN",
+            event_type: "AUTOMATION_PAUSED",
+            message:
+              "Convite recebido mas ignorado pois a automação está pausada pelo prestador.",
             details: { url: targetUrl },
           });
           return;
         }
 
-        // 2. Verificação de Capacidade de Atendimentos Simultâneos da Frota
         try {
           const { data: vehicles } = await this.supabase
-            .from('vehicles')
-            .select('*')
-            .eq('tenant_id', this.tenantId)
-            .eq('is_active', true);
+            .from("vehicles")
+            .select("*")
+            .eq("tenant_id", this.tenantId)
+            .eq("is_active", true);
 
-          const fleetCapacity = vehicles && vehicles.length > 0 ? vehicles.length : 1;
+          const fleetCapacity =
+            vehicles && vehicles.length > 0 ? vehicles.length : 1;
 
-          // Busca chamados em andamento do tenant
           const { data: calls } = await this.supabase
-            .from('captured_calls')
-            .select('*')
-            .eq('tenant_id', this.tenantId)
-            .eq('status', 'SUCCESS')
-            .is('completed_at', null);
+            .from("captured_calls")
+            .select("*")
+            .eq("tenant_id", this.tenantId)
+            .eq("status", "SUCCESS")
+            .is("completed_at", null);
 
           const now = Date.now();
           const activeCalls = (calls || []).filter((call) => {
@@ -478,23 +709,30 @@ export class WhatsAppWorker {
           });
 
           if (activeCalls.length >= fleetCapacity) {
-            console.log(`[Worker] Capacidade máxima da frota atingida (${activeCalls.length}/${fleetCapacity} atendimentos ativos). Ignorando convite.`);
+            console.log(
+              `[Worker] Capacidade máxima da frota atingida (${activeCalls.length}/${fleetCapacity} atendimentos ativos). Ignorando convite.`,
+            );
 
             await recordSystemLog(this.supabase, {
               tenant_id: this.tenantId,
-              level: 'WARN',
-              event_type: 'FLEET_CAPACITY_REACHED',
+              level: "WARN",
+              event_type: "FLEET_CAPACITY_REACHED",
               message: `Capacidade da frota atingida (${activeCalls.length}/${fleetCapacity} veículos em atendimento). Convite não aceito automaticamente.`,
-              details: { url: targetUrl, activeCallsCount: activeCalls.length, fleetCapacity },
+              details: {
+                url: targetUrl,
+                activeCallsCount: activeCalls.length,
+                fleetCapacity,
+              },
             });
             return;
           }
 
-          // Vincula o primeiro veículo disponível da frota ativa ao chamado
-          const assignedVehicleIds = new Set(activeCalls.map((c) => c.vehicle_id).filter(Boolean));
-          const availableVehicle = (vehicles || []).find((v) => !assignedVehicleIds.has(v.id)) || null;
+          const assignedVehicleIds = new Set(
+            activeCalls.map((c) => c.vehicle_id).filter(Boolean),
+          );
+          const availableVehicle =
+            (vehicles || []).find((v) => !assignedVehicleIds.has(v.id)) || null;
 
-          // 3. Processa o convite com Retry Inteligente
           setImmediate(async () => {
             const result = await this.scraper.processarConvite(targetUrl);
             const previaMinutos = calcularPrevia(result.distanciaKm);
@@ -514,17 +752,19 @@ export class WhatsAppWorker {
               previa_minutos: previaMinutos,
               vehicle_id: availableVehicle?.id || null,
               duration_ms: result.durationMs,
-              status: result.success ? 'SUCCESS' : 'FAILED',
+              status: result.success ? "SUCCESS" : "FAILED",
               response_payload: responsePayloadToRecord,
               error_message: result.errorMessage || null,
             });
 
             await recordSystemLog(this.supabase, {
               tenant_id: this.tenantId,
-              level: result.success ? 'INFO' : 'ERROR',
-              event_type: result.success ? 'HTTP_POST_SUCCESS' : 'HTTP_POST_ERROR',
+              level: result.success ? "INFO" : "ERROR",
+              event_type: result.success
+                ? "HTTP_POST_SUCCESS"
+                : "HTTP_POST_ERROR",
               message: result.success
-                ? `Convite aceito com sucesso em ${result.durationMs}ms${availableVehicle ? ` | Veículo: ${availableVehicle.title}` : ''}.`
+                ? `Convite aceito com sucesso em ${result.durationMs}ms${availableVehicle ? ` | Veículo: ${availableVehicle.title}` : ""}.`
                 : `Falha no aceite do convite: ${result.errorMessage}`,
               details: {
                 url: targetUrl,
@@ -536,23 +776,31 @@ export class WhatsAppWorker {
             });
           });
         } catch (err: any) {
-          console.error('[Worker] Erro ao verificar capacidade da frota:', err.message);
+          console.error(
+            "[Worker] Erro ao verificar capacidade da frota:",
+            err.message,
+          );
         }
       }
     };
 
-    this.client.on('message', processIncomingMessage);
-    this.client.on('message_create', processIncomingMessage);
+    client.on("message", processIncomingMessage);
+    client.on("message_create", processIncomingMessage);
   }
 
   public async start(): Promise<void> {
     if (this.starting || this.running) {
-      console.log(`[Worker] Worker já está rodando ou em processo de inicialização para tenant ${this.tenantId}. Ignorando nova chamada.`);
+      console.log(
+        `[Worker] Worker já está rodando ou em processo de inicialização para tenant ${this.tenantId}. Ignorando nova chamada.`,
+      );
       return;
     }
     this.starting = true;
+    this.sessionStartTimestamp = Date.now();
     try {
-      console.log(`[Worker] Inicializando cliente WhatsApp para tenant ${this.tenantId}...`);
+      console.log(
+        `[Worker] Inicializando cliente WhatsApp para tenant ${this.tenantId}...`,
+      );
       this.running = true;
       await this.client.initialize();
     } catch (err: any) {
@@ -566,11 +814,19 @@ export class WhatsAppWorker {
   public async stop(): Promise<void> {
     this.running = false;
     this.starting = false;
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    try {
-      await this.client.destroy();
-    } catch (err: any) {
-      console.error('[Worker] Erro ao encerrar WhatsApp client:', err.message);
+    this.isConnected = false;
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.authTimeoutTimer) {
+      clearTimeout(this.authTimeoutTimer);
+      this.authTimeoutTimer = null;
+    }
+
+    if (this.client) {
+      await safelyCloseAndKillBrowser(this.client);
     }
   }
 }

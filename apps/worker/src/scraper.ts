@@ -124,17 +124,6 @@ export class VeloxScraper {
         const bodyText = $('body').text().replace(/\s+/g, ' ').trim();
         debugInfo.bodyTextSnippet = bodyText.slice(0, 600);
 
-        // Verificação imediata de avisos/recusas na tela
-        if (bodyText.includes('Convite já aceito por outro prestador')) {
-          throw new NonRetryableError('Convite já aceito por outro prestador!');
-        }
-        if (bodyText.includes('Convite expirado') || bodyText.includes('Convite encerrado') || bodyText.includes('Convite cancelado')) {
-          throw new NonRetryableError(`Convite indisponível no Velox (${pageTitle}): ${bodyText.slice(0, 150)}`);
-        }
-        if (bodyText.includes('Login') && (bodyText.includes('Senha') || bodyText.includes('Entrar'))) {
-          throw new NonRetryableError(`Página de convite redirecionou para Login do Velox (Autenticação exigida). Título: ${pageTitle}`);
-        }
-
         debugInfo.failedStep = 'FORM_EXTRACTION';
 
         const allInputs: Record<string, string> = {};
@@ -203,6 +192,26 @@ export class VeloxScraper {
           chaveConvite = parsedUrl.searchParams.get('ChaveConvite') || '';
         } catch {
           // Ignore
+        }
+
+        // Se encontrou inputs VÁLIDOS do formulário, prossegue com o envio do aceite!
+        const hasValidFormInputs = Boolean(id || idAtendimentoConvite || (chaveConvite && Object.keys(allInputs).length > 0));
+
+        // Verificação de avisos/recusas na tela SOMENTE se NÃO foram encontrados campos de formulário válidos
+        if (!hasValidFormInputs) {
+          console.warn(`[Scraper] Form sem inputs válidos. Analisando texto da página (${pageTitle})...`);
+          if (bodyText.includes('Convite já aceito por outro prestador')) {
+            console.warn(`[Scraper] Velox retornou no HTML: "Convite já aceito por outro prestador"`);
+            throw new NonRetryableError('Convite já aceito por outro prestador!');
+          }
+          if (bodyText.includes('Convite expirado') || bodyText.includes('Convite encerrado') || bodyText.includes('Convite cancelado')) {
+            console.warn(`[Scraper] Velox retornou no HTML: "Convite indisponível/encerrado/cancelado"`);
+            throw new NonRetryableError(`Convite indisponível no Velox (${pageTitle}): ${bodyText.slice(0, 150)}`);
+          }
+          if (bodyText.includes('Login') && (bodyText.includes('Senha') || bodyText.includes('Entrar'))) {
+            console.warn(`[Scraper] Velox retornou tela de Login (Autenticação exigida)`);
+            throw new NonRetryableError(`Página de convite redirecionou para Login do Velox (Autenticação exigida). Título: ${pageTitle}`);
+          }
         }
 
         // Validação: exige Id numérico ou ChaveConvite

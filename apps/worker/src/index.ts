@@ -20,35 +20,67 @@ async function main() {
 
   const supabase = createSupabaseClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   const activeWorkers = new Map<string, WhatsAppWorker>();
+  const tenantLocks = new Map<string, boolean>();
 
-  const startWorkerForTenant = async (tenantId: string, sessionId: string, isActive: boolean, phoneNumber?: string | null) => {
-    let worker = activeWorkers.get(tenantId);
-    if (worker && worker.isRunning()) {
-      worker.setIsActive(isActive);
-      if (phoneNumber && phoneNumber !== worker.getPhoneNumber()) {
-        await worker.requestPairingCodeOnDemand(phoneNumber);
-      }
+  const startWorkerForTenant = async (
+    tenantId: string,
+    sessionId: string,
+    isActive: boolean,
+    phoneNumber?: string | null
+  ) => {
+    if (tenantLocks.get(tenantId)) {
+      console.log(`[Orchestrator] Operação em andamento para tenant ${tenantId}. Ignorando chamada concorrente.`);
       return;
     }
+    tenantLocks.set(tenantId, true);
 
-    if (worker && !worker.isRunning()) {
-      console.log(`[Orchestrator] Removendo instância inativa anterior do tenant ${tenantId}...`);
-      activeWorkers.delete(tenantId);
+    try {
+      let worker = activeWorkers.get(tenantId);
+      if (worker && worker.isRunning()) {
+        worker.setIsActive(isActive);
+        if (phoneNumber && phoneNumber !== worker.getPhoneNumber()) {
+          await worker.requestPairingCodeOnDemand(phoneNumber);
+        }
+        return;
+      }
+
+      if (worker && !worker.isRunning()) {
+        console.log(`[Orchestrator] Removendo e encerrando instância inativa anterior do tenant ${tenantId}...`);
+        await worker.stop();
+        activeWorkers.delete(tenantId);
+      }
+
+      console.log(
+        `[Orchestrator] Iniciando worker isolado para tenant ${tenantId} [Automação: ${
+          isActive ? 'LIGADA' : 'PAUSADA'
+        }]${phoneNumber ? ` [Telefone: ${phoneNumber}]` : ''}...`
+      );
+      worker = new WhatsAppWorker(tenantId, sessionId, supabase, undefined, phoneNumber);
+      worker.setIsActive(isActive);
+      activeWorkers.set(tenantId, worker);
+      await worker.start();
+    } catch (err: any) {
+      console.error(`[Orchestrator] Erro ao iniciar worker para tenant ${tenantId}:`, err?.message);
+    } finally {
+      tenantLocks.set(tenantId, false);
     }
-
-    console.log(`[Orchestrator] Iniciando worker isolado para tenant ${tenantId} [Automação: ${isActive ? 'LIGADA' : 'PAUSADA'}]${phoneNumber ? ` [Telefone: ${phoneNumber}]` : ''}...`);
-    worker = new WhatsAppWorker(tenantId, sessionId, supabase, undefined, phoneNumber);
-    worker.setIsActive(isActive);
-    activeWorkers.set(tenantId, worker);
-    await worker.start();
   };
 
   const stopWorkerForTenant = async (tenantId: string) => {
-    const worker = activeWorkers.get(tenantId);
-    if (worker) {
-      console.log(`[Orchestrator] Encerrando worker do tenant ${tenantId}...`);
-      await worker.stop();
-      activeWorkers.delete(tenantId);
+    if (tenantLocks.get(tenantId)) return;
+    tenantLocks.set(tenantId, true);
+
+    try {
+      const worker = activeWorkers.get(tenantId);
+      if (worker) {
+        console.log(`[Orchestrator] Encerrando worker do tenant ${tenantId}...`);
+        await worker.stop();
+        activeWorkers.delete(tenantId);
+      }
+    } catch (err: any) {
+      console.error(`[Orchestrator] Erro ao encerrar worker para tenant ${tenantId}:`, err?.message);
+    } finally {
+      tenantLocks.set(tenantId, false);
     }
   };
 
@@ -71,7 +103,9 @@ async function main() {
       const hasSessionDir = fs.existsSync(sessionDir);
 
       if (session.status === 'CONNECTED' || hasSessionDir) {
-        console.log(`[Orchestrator] Inicializando robô para tenant ${session.tenant_id} (Status DB: ${session.status}, Pasta em Disco: ${hasSessionDir})...`);
+        console.log(
+          `[Orchestrator] Inicializando robô para tenant ${session.tenant_id} (Status DB: ${session.status}, Pasta em Disco: ${hasSessionDir})...`
+        );
         await startWorkerForTenant(session.tenant_id, session.id, session.is_active !== false, session.phone_number);
         // Stagger de 800ms para suavizar a carga de CPU da VM durante o restart
         await new Promise((resolve) => setTimeout(resolve, 800));
@@ -104,7 +138,9 @@ async function main() {
         const session = payload.new;
         if (!session) return;
 
-        console.log(`[Orchestrator] Evento de sessão [tenant: ${session.tenant_id}]: status = ${session.status}, is_active = ${session.is_active}`);
+        console.log(
+          `[Orchestrator] Evento de sessão [tenant: ${session.tenant_id}]: status = ${session.status}, is_active = ${session.is_active}`
+        );
 
         if (session.is_active === false) {
           console.log(`[Orchestrator] Automação desativada pelo prestador [tenant: ${session.tenant_id}]. Pausando escuta...`);
@@ -115,18 +151,32 @@ async function main() {
           return;
         }
 
-        if (session.status === 'DISCONNECTED_NEED_QR' || session.status === 'CONNECTED' || session.status === 'AUTHENTICATING') {
-          const existingWorker = activeWorkers.get(session.tenant_id);
-          if (
-            existingWorker &&
+        if (
+          session.status === 'DISCONNECTED_NEED_QR' ||
+          session.status === 'CONNECTED' ||
+          session.status === 'AUTHENTICATING'
+        ) {
+          const isFreshResetRequested =
             session.status === 'DISCONNECTED_NEED_QR' &&
             session.qr_code === null &&
             session.pairing_code === null &&
-            !session.phone_number
-          ) {
-            console.log(`[Orchestrator] Redefinição de sessão solicitada para tenant ${session.tenant_id}. Reiniciando worker do zero...`);
-            await existingWorker.restartForFreshAuth(session.phone_number);
-            return;
+            !session.phone_number;
+
+          if (isFreshResetRequested) {
+            console.log(
+              `[Orchestrator] Redefinição de sessão solicitada para tenant ${session.tenant_id}. Reiniciando worker do zero...`
+            );
+            const existingWorker = activeWorkers.get(session.tenant_id);
+            if (existingWorker) {
+              await existingWorker.restartForFreshAuth(session.phone_number);
+              return;
+            } else {
+              const authDataPath = process.env.WWEBJS_AUTH_PATH || path.resolve(process.cwd(), '.wwebjs_auth');
+              const sessionDir = path.join(authDataPath, `session-tenant_${session.tenant_id}`);
+              if (fs.existsSync(sessionDir)) {
+                fs.rmSync(sessionDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+              }
+            }
           }
 
           await startWorkerForTenant(session.tenant_id, session.id, true, session.phone_number);
@@ -137,10 +187,14 @@ async function main() {
           const hasSessionDir = fs.existsSync(sessionDir);
 
           if (!hasSessionDir) {
-            console.log(`[Orchestrator] Sessão desconectada e sem pasta em disco para tenant ${session.tenant_id}. Encerrando worker...`);
+            console.log(
+              `[Orchestrator] Sessão desconectada e sem pasta em disco para tenant ${session.tenant_id}. Encerrando worker...`
+            );
             await stopWorkerForTenant(session.tenant_id);
           } else {
-            console.log(`[Orchestrator] Status DISCONNECTED recebido para tenant ${session.tenant_id}, mas mantendo worker rodando em segundo plano por possuir pasta em disco.`);
+            console.log(
+              `[Orchestrator] Status DISCONNECTED recebido para tenant ${session.tenant_id}, mas mantendo worker rodando em segundo plano por possuir pasta em disco.`
+            );
           }
         }
       }
@@ -158,7 +212,8 @@ async function main() {
     if (
       msg.includes('Execution context was destroyed') ||
       msg.includes('Target closed') ||
-      msg.includes('Protocol error')
+      msg.includes('Protocol error') ||
+      msg.includes('detached Frame')
     ) {
       console.warn(`[Orchestrator] Reinicialização de página Chromium detectada (${msg.split('\n')[0]}).`);
       return;
