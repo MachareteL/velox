@@ -69,6 +69,16 @@ function purgeSessionDir(tenantId: string): void {
   }
 }
 
+function extractChaveConvite(urlStr: string): string | null {
+  try {
+    const urlObj = new URL(urlStr);
+    return urlObj.searchParams.get("ChaveConvite");
+  } catch {
+    const match = urlStr.match(/ChaveConvite=([a-f0-9\-]+)/i);
+    return match ? match[1] : null;
+  }
+}
+
 export class WhatsAppWorker {
   private client!: Client;
   private scraper: VeloxScraper;
@@ -684,54 +694,97 @@ export class WhatsAppWorker {
         }
 
         try {
-          const { data: vehicles } = await this.supabase
-            .from("vehicles")
-            .select("*")
-            .eq("tenant_id", this.tenantId)
-            .eq("is_active", true);
+          const chaveConvite = extractChaveConvite(targetUrl);
+          let isDuplicate = false;
 
-          const fleetCapacity =
-            vehicles && vehicles.length > 0 ? vehicles.length : 1;
+          if (chaveConvite) {
+            const { data: existingCalls } = await this.supabase
+              .from("captured_calls")
+              .select("id")
+              .eq("tenant_id", this.tenantId)
+              .ilike("url", `%${chaveConvite}%`)
+              .limit(1);
 
-          const { data: calls } = await this.supabase
-            .from("captured_calls")
-            .select("*")
-            .eq("tenant_id", this.tenantId)
-            .eq("status", "SUCCESS")
-            .is("completed_at", null);
+            if (existingCalls && existingCalls.length > 0) {
+              isDuplicate = true;
+            }
+          } else {
+            const { data: existingCalls } = await this.supabase
+              .from("captured_calls")
+              .select("id")
+              .eq("tenant_id", this.tenantId)
+              .eq("url", targetUrl)
+              .limit(1);
 
-          const now = Date.now();
-          const activeCalls = (calls || []).filter((call) => {
-            const createdAtMs = new Date(call.created_at).getTime();
-            const durationMin = call.previa_minutos || 50;
-            const expiresAtMs = createdAtMs + durationMin * 60 * 1000;
-            return now < expiresAtMs;
-          });
+            if (existingCalls && existingCalls.length > 0) {
+              isDuplicate = true;
+            }
+          }
 
-          if (activeCalls.length >= fleetCapacity) {
-            console.log(
-              `[Worker] Capacidade máxima da frota atingida (${activeCalls.length}/${fleetCapacity} atendimentos ativos). Ignorando convite.`,
+          let availableVehicle: any = null;
+
+          if (isDuplicate) {
+            console.warn(
+              `[Worker] ⚠️ Chamado duplicado identificado (${chaveConvite ? `ChaveConvite: ${chaveConvite}` : targetUrl}). Nenhum veículo adicional será alocado, procedendo com a requisição de aceite.`,
             );
 
             await recordSystemLog(this.supabase, {
               tenant_id: this.tenantId,
               level: "WARN",
-              event_type: "FLEET_CAPACITY_REACHED",
-              message: `Capacidade da frota atingida (${activeCalls.length}/${fleetCapacity} veículos em atendimento). Convite não aceito automaticamente.`,
-              details: {
-                url: targetUrl,
-                activeCallsCount: activeCalls.length,
-                fleetCapacity,
-              },
+              event_type: "DUPLICATE_CALL_DETECTED",
+              message: `Chamado duplicado identificado (${chaveConvite ? `ChaveConvite: ${chaveConvite}` : targetUrl}). Nenhum veículo adicional alocado.`,
+              details: { url: targetUrl, chaveConvite },
             });
-            return;
-          }
+          } else {
+            const { data: vehicles } = await this.supabase
+              .from("vehicles")
+              .select("*")
+              .eq("tenant_id", this.tenantId)
+              .eq("is_active", true);
 
-          const assignedVehicleIds = new Set(
-            activeCalls.map((c) => c.vehicle_id).filter(Boolean),
-          );
-          const availableVehicle =
-            (vehicles || []).find((v) => !assignedVehicleIds.has(v.id)) || null;
+            const fleetCapacity =
+              vehicles && vehicles.length > 0 ? vehicles.length : 1;
+
+            const { data: calls } = await this.supabase
+              .from("captured_calls")
+              .select("*")
+              .eq("tenant_id", this.tenantId)
+              .eq("status", "SUCCESS")
+              .is("completed_at", null);
+
+            const now = Date.now();
+            const activeCalls = (calls || []).filter((call) => {
+              const createdAtMs = new Date(call.created_at).getTime();
+              const durationMin = call.previa_minutos || 50;
+              const expiresAtMs = createdAtMs + durationMin * 60 * 1000;
+              return now < expiresAtMs;
+            });
+
+            if (activeCalls.length >= fleetCapacity) {
+              console.log(
+                `[Worker] Capacidade máxima da frota atingida (${activeCalls.length}/${fleetCapacity} atendimentos ativos). Ignorando convite.`,
+              );
+
+              await recordSystemLog(this.supabase, {
+                tenant_id: this.tenantId,
+                level: "WARN",
+                event_type: "FLEET_CAPACITY_REACHED",
+                message: `Capacidade da frota atingida (${activeCalls.length}/${fleetCapacity} veículos em atendimento). Convite não aceito automaticamente.`,
+                details: {
+                  url: targetUrl,
+                  activeCallsCount: activeCalls.length,
+                  fleetCapacity,
+                },
+              });
+              return;
+            }
+
+            const assignedVehicleIds = new Set(
+              activeCalls.map((c) => c.vehicle_id).filter(Boolean),
+            );
+            availableVehicle =
+              (vehicles || []).find((v) => !assignedVehicleIds.has(v.id)) || null;
+          }
 
           setImmediate(async () => {
             const result = await this.scraper.processarConvite(targetUrl);
@@ -742,6 +795,7 @@ export class WhatsAppWorker {
               debugInfo: result.debugInfo || null,
               attemptsMade: result.attemptsMade,
               payloadSent: result.payload || null,
+              isDuplicate: isDuplicate || undefined,
             };
 
             await recordCapturedCall(this.supabase, {
@@ -764,12 +818,13 @@ export class WhatsAppWorker {
                 ? "HTTP_POST_SUCCESS"
                 : "HTTP_POST_ERROR",
               message: result.success
-                ? `Convite aceito com sucesso em ${result.durationMs}ms${availableVehicle ? ` | Veículo: ${availableVehicle.title}` : ""}.`
+                ? `Convite aceito com sucesso em ${result.durationMs}ms${availableVehicle ? ` | Veículo: ${availableVehicle.title}` : isDuplicate ? " | Duplicado (sem novo veículo)" : ""}.`
                 : `Falha no aceite do convite: ${result.errorMessage}`,
               details: {
                 url: targetUrl,
                 durationMs: result.durationMs,
-                vehicleId: availableVehicle?.id,
+                vehicleId: availableVehicle?.id || null,
+                isDuplicate,
                 statusCode: result.statusCode,
                 debugInfo: result.debugInfo,
               },
