@@ -101,6 +101,10 @@ export class WhatsAppWorker {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private authTimeoutTimer: NodeJS.Timeout | null = null;
 
+  // Heartbeat / Health Check anti-travamento (Zombie state)
+  private healthCheckInterval: NodeJS.Timeout | null = null;
+  private consecutiveHealthFailures: number = 0;
+
   constructor(
     private tenantId: string,
     private sessionId: string,
@@ -134,6 +138,12 @@ export class WhatsAppWorker {
         "--disable-gpu",
         "--disable-session-crashed-bubble",
         "--disable-infobars",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-component-update",
+        "--disable-ipc-flooding-protection",
+        "--no-default-browser-check",
       ],
     };
 
@@ -488,6 +498,20 @@ export class WhatsAppWorker {
       );
     });
 
+    // Evento de alteração de estado da conexão
+    client.on("change_state", (state: string) => {
+      console.log(
+        `[Worker] Estado da conexão alterado no WhatsApp Web para tenant ${this.tenantId}: ${state}`,
+      );
+      if (
+        state === "DISCONNECTED" ||
+        state === "UNPAIRED" ||
+        state === "TIMEOUT"
+      ) {
+        this.isConnected = false;
+      }
+    });
+
     // Evento de conexão pronta
     client.on("ready", async () => {
       console.log(
@@ -495,11 +519,14 @@ export class WhatsAppWorker {
       );
       this.isConnected = true;
       this.reconnectAttempts = 0;
+      this.consecutiveHealthFailures = 0;
 
       if (this.authTimeoutTimer) {
         clearTimeout(this.authTimeoutTimer);
         this.authTimeoutTimer = null;
       }
+
+      this.startHealthCheck();
 
       await updateSessionStatus(
         this.supabase,
@@ -843,6 +870,97 @@ export class WhatsAppWorker {
     client.on("message_create", processIncomingMessage);
   }
 
+  private startHealthCheck(): void {
+    this.stopHealthCheck();
+    // Executa a cada 90 segundos para detectar travamentos zumbis no Chromium
+    this.healthCheckInterval = setInterval(async () => {
+      await this.runHealthCheck();
+    }, 90000);
+  }
+
+  private stopHealthCheck(): void {
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+      this.healthCheckInterval = null;
+    }
+  }
+
+  private async runHealthCheck(): Promise<void> {
+    if (!this.running || !this.isConnected || !this.client) return;
+
+    try {
+      const statePromise = this.client.getState();
+      const timeoutPromise = new Promise<string>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("Health check timeout (15s)")),
+          15000,
+        ),
+      );
+
+      const state = await Promise.race([statePromise, timeoutPromise]);
+
+      if (state === "CONNECTED") {
+        this.consecutiveHealthFailures = 0;
+        return;
+      }
+
+      this.consecutiveHealthFailures++;
+      console.warn(
+        `[Worker HealthCheck] ⚠️ Estado do WhatsApp (${state}) diferente de CONNECTED para tenant ${this.tenantId} (Falha #${this.consecutiveHealthFailures}).`,
+      );
+
+      if (this.consecutiveHealthFailures >= 2) {
+        await this.handleZombieReconnection(
+          `Estado incorreto retornado: ${state}`,
+        );
+      }
+    } catch (err: any) {
+      this.consecutiveHealthFailures++;
+      const errMsg = err?.message || String(err || "");
+      console.warn(
+        `[Worker HealthCheck] 🛑 Falha no Health Check do WhatsApp para tenant ${this.tenantId}: ${errMsg} (Falha #${this.consecutiveHealthFailures})`,
+      );
+
+      if (
+        this.consecutiveHealthFailures >= 2 ||
+        errMsg.includes("Execution context was destroyed") ||
+        errMsg.includes("Target closed") ||
+        errMsg.includes("Protocol error") ||
+        errMsg.includes("detached Frame")
+      ) {
+        await this.handleZombieReconnection(`Health Check falhou: ${errMsg}`);
+      }
+    }
+  }
+
+  private async handleZombieReconnection(reason: string): Promise<void> {
+    if (this.starting) return;
+    this.consecutiveHealthFailures = 0;
+    console.warn(
+      `[Worker] 🔄 Reiniciando worker travado/zumbi para tenant ${this.tenantId} (Motivo: ${reason})...`,
+    );
+
+    await recordSystemLog(this.supabase, {
+      tenant_id: this.tenantId,
+      level: "WARN",
+      event_type: "ZOMBIE_RECONNECT",
+      message: `Conexão WhatsApp inativa/zumbi detectada pelo Health Check (${reason}). Reiniciando robô automaticamente...`,
+      details: { reason },
+    });
+
+    try {
+      await this.stop();
+      await new Promise((res) => setTimeout(res, 2000));
+      this.client = this.createClient();
+      await this.start();
+    } catch (err: any) {
+      console.error(
+        `[Worker] Erro ao reiniciar worker pós-zumbi para tenant ${this.tenantId}:`,
+        err?.message,
+      );
+    }
+  }
+
   public async start(): Promise<void> {
     if (this.starting || this.running) {
       console.log(
@@ -870,6 +988,8 @@ export class WhatsAppWorker {
     this.running = false;
     this.starting = false;
     this.isConnected = false;
+    this.consecutiveHealthFailures = 0;
+    this.stopHealthCheck();
 
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
