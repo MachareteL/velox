@@ -69,6 +69,44 @@ function purgeSessionDir(tenantId: string): void {
   }
 }
 
+function cleanSessionLockFiles(tenantId: string): void {
+  try {
+    const authDataPath =
+      process.env.WWEBJS_AUTH_PATH ||
+      path.resolve(process.cwd(), ".wwebjs_auth");
+    const sessionDir = path.join(authDataPath, `session-tenant_${tenantId}`);
+
+    if (!fs.existsSync(sessionDir)) return;
+
+    const lockFiles = [
+      "SingletonLock",
+      "SingletonCookie",
+      "SingletonSocket",
+      "DevToolsActivePort",
+    ];
+
+    const dirsToCheck = [sessionDir, path.join(sessionDir, "Default")];
+
+    for (const d of dirsToCheck) {
+      if (fs.existsSync(d)) {
+        for (const file of lockFiles) {
+          const filePath = path.join(d, file);
+          if (fs.existsSync(filePath)) {
+            try {
+              fs.unlinkSync(filePath);
+              console.log(`[Worker] Trava de sessão de navegador removida: ${filePath}`);
+            } catch (_) {}
+          }
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn(
+      `[Worker] Erro ao limpar travamentos de arquivo de sessão: ${err?.message}`,
+    );
+  }
+}
+
 function extractChaveConvite(urlStr: string): string | null {
   try {
     const urlObj = new URL(urlStr);
@@ -950,7 +988,8 @@ export class WhatsAppWorker {
 
     try {
       await this.stop();
-      await new Promise((res) => setTimeout(res, 2000));
+      await new Promise((res) => setTimeout(res, 2500));
+      cleanSessionLockFiles(this.tenantId);
       this.client = this.createClient();
       await this.start();
     } catch (err: any) {
