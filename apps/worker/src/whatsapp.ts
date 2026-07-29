@@ -11,15 +11,32 @@ import { VeloxScraper } from "./scraper";
 import { calcularPrevia } from "./calculator";
 import path from "path";
 
-function getWindowsChromePath(): string | null {
-  const paths = [
-    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-    (process.env.LOCALAPPDATA || "") +
-      "\\Google\\Chrome\\Application\\chrome.exe",
-  ];
-  for (const p of paths) {
-    if (p && fs.existsSync(p)) return p;
+function getSystemChromePath(): string | null {
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    return process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+
+  if (process.platform === "win32") {
+    const paths = [
+      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+      (process.env.LOCALAPPDATA || "") +
+        "\\Google\\Chrome\\Application\\chrome.exe",
+    ];
+    for (const p of paths) {
+      if (p && fs.existsSync(p)) return p;
+    }
+  } else {
+    const paths = [
+      "/usr/bin/chromium-browser",
+      "/usr/bin/chromium",
+      "/usr/bin/google-chrome",
+      "/usr/bin/google-chrome-stable",
+      "/snap/bin/chromium",
+    ];
+    for (const p of paths) {
+      if (p && fs.existsSync(p)) return p;
+    }
   }
   return null;
 }
@@ -185,8 +202,7 @@ export class WhatsAppWorker {
       ],
     };
 
-    const systemChromePath =
-      getWindowsChromePath() || process.env.PUPPETEER_EXECUTABLE_PATH;
+    const systemChromePath = getSystemChromePath();
     if (systemChromePath) {
       console.log(
         `[Worker] Utilizando navegador Chrome instalado em: ${systemChromePath}`,
