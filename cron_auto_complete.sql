@@ -22,9 +22,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- 3. Agenda o Job no pg_cron para executar a cada 2 minutos
+-- 3. Agenda o Job no pg_cron para executar a cada 5 minutos
 SELECT cron.schedule(
     'auto-complete-expired-calls-job',
-    '*/2 * * * *',
+    '*/5 * * * *',
     $$ SELECT public.auto_complete_expired_calls(); $$
 );
