@@ -168,13 +168,13 @@ export function CallsFeed({ calls, onRefreshCalls }: CallsFeedProps) {
           <table className="w-full text-left text-sm">
             <thead className="text-[11px] uppercase tracking-wider text-gray-400 bg-gray-950/80 border-b border-gray-800/80">
               <tr>
-                <th className="py-3 px-4 rounded-l-lg">Status</th>
+                <th className="py-3 px-4 rounded-l-lg">Ação</th>
+                <th className="py-3 px-4">Status</th>
                 <th className="py-3 px-4">Veículo Alocado</th>
                 <th className="py-3 px-4">Tempo de Aceite</th>
                 <th className="py-3 px-4">Prévia (Chegada)</th>
                 <th className="py-3 px-4">Link do Convite</th>
-                <th className="py-3 px-4">Horário</th>
-                <th className="py-3 px-4 rounded-r-lg text-right">Ação</th>
+                <th className="py-3 px-4 rounded-r-lg">Horário</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800/40">
@@ -182,6 +182,21 @@ export function CallsFeed({ calls, onRefreshCalls }: CallsFeedProps) {
                 const statusInfo = getCallStatusInfo(call);
                 return (
                   <tr key={call.id} className="hover:bg-gray-800/20 transition-colors">
+                    {/* Ação (Finalizar Atendimento) */}
+                    <td className="py-3.5 px-4">
+                      {statusInfo.isActive ? (
+                        <button
+                          onClick={() => handleFinishCall(call.id)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 transition-all hover:scale-105 active:scale-95 whitespace-nowrap"
+                        >
+                          <CheckSquare className="w-3.5 h-3.5" />
+                          Finalizar Atendimento
+                        </button>
+                      ) : (
+                        <span className="text-gray-600 text-xs font-mono">-</span>
+                      )}
+                    </td>
+
                     {/* Status */}
                     <td className="py-3.5 px-4">
                       <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border ${statusInfo.badgeClass}`}>
@@ -230,19 +245,6 @@ export function CallsFeed({ calls, onRefreshCalls }: CallsFeedProps) {
                     {/* Data/Hora */}
                     <td className="py-3.5 px-4 text-xs text-gray-400 font-mono">
                       {new Date(call.created_at).toLocaleTimeString('pt-BR')}
-                    </td>
-
-                    {/* Ação (Finalizar Atendimento) */}
-                    <td className="py-3.5 px-4 text-right">
-                      {statusInfo.isActive && (
-                        <button
-                          onClick={() => handleFinishCall(call.id)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 transition-all hover:scale-105 active:scale-95"
-                        >
-                          <CheckSquare className="w-3.5 h-3.5" />
-                          Finalizar Atendimento
-                        </button>
-                      )}
                     </td>
                   </tr>
                 );
