@@ -341,7 +341,9 @@ export class VeloxScraper {
         if (debugInfo.getStatusCode) console.error(`          • HTTP GET Status: ${debugInfo.getStatusCode}`);
 
         if (error instanceof NonRetryableError || (error.message && error.message.includes('já aceito'))) {
-          console.log(`[Scraper] 🛑 Convite encerrado/indisponível no Velox. Cancelando tentativas sem retry.`);
+          console.log(`[Scraper] 🛑 CANCELADO SEM RETRY: ${error.message}`);
+          if (debugInfo.pageTitle) console.log(`          • Título da Página: "${debugInfo.pageTitle}"`);
+          if (debugInfo.bodyTextSnippet) console.log(`          • Trecho do HTML lido: "${debugInfo.bodyTextSnippet.slice(0, 250)}"`);
           console.log(`================================================================================\n`);
           break;
         }
