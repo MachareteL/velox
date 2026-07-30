@@ -156,134 +156,134 @@ async function main() {
   }
 
   // 2. Escuta global de alterações na tabela whatsapp_sessions para todos os tenants
-  const realtimeChannel = supabase
-    .channel("multi-tenant-sessions-listener")
-    .on(
-      "postgres_changes",
-      {
-        event: "*",
-        schema: "public",
-        table: "whatsapp_sessions",
-      },
-      async (payload: any) => {
-        if (payload.eventType === "DELETE") {
-          const oldSession = payload.old;
-          if (oldSession && oldSession.tenant_id) {
-            console.log(
-              `[Orchestrator] Sessão deletada do banco [tenant: ${oldSession.tenant_id}]. Encerrando worker...`
-            );
-            await stopWorkerForTenant(oldSession.tenant_id);
+  let realtimeChannel: any = null;
+
+  const createRealtimeSubscription = () => {
+    if (realtimeChannel) {
+      try {
+        supabase.removeChannel(realtimeChannel);
+      } catch (_) {}
+    }
+
+    realtimeChannel = supabase
+      .channel(`multi-tenant-sessions-${Date.now()}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "whatsapp_sessions",
+        },
+        async (payload: any) => {
+          if (payload.eventType === "DELETE") {
+            const oldSession = payload.old;
+            if (oldSession && oldSession.tenant_id) {
+              console.log(
+                `[Orchestrator] Sessão deletada do banco [tenant: ${oldSession.tenant_id}]. Encerrando worker...`
+              );
+              await stopWorkerForTenant(oldSession.tenant_id);
+            }
+            return;
           }
-          return;
-        }
 
-        const session = payload.new;
-        if (!session) return;
+          const session = payload.new;
+          if (!session) return;
 
-        console.log(
-          `[Orchestrator] Evento de sessão [tenant: ${session.tenant_id}]: status = ${session.status}, is_active = ${session.is_active}`
-        );
-
-        if (session.is_active === false) {
           console.log(
-            `[Orchestrator] Automação desativada pelo prestador [tenant: ${session.tenant_id}]. Pausando escuta...`
+            `[Orchestrator] Evento de sessão [tenant: ${session.tenant_id}]: status = ${session.status}, is_active = ${session.is_active}`
           );
-          const worker = activeWorkers.get(session.tenant_id);
-          if (worker) {
-            worker.setIsActive(false);
+
+          if (session.is_active === false) {
+            console.log(
+              `[Orchestrator] Automação desativada pelo prestador [tenant: ${session.tenant_id}]. Pausando escuta...`
+            );
+            const worker = activeWorkers.get(session.tenant_id);
+            if (worker) {
+              worker.setIsActive(false);
+            }
+            return;
           }
-          return;
-        }
 
-        if (
-          session.status === "DISCONNECTED_NEED_QR" ||
-          session.status === "CONNECTED" ||
-          session.status === "AUTHENTICATING"
-        ) {
-          const isFreshResetRequested =
-            payload.old &&
-            payload.old.status !== "DISCONNECTED_NEED_QR" &&
-            session.status === "DISCONNECTED_NEED_QR" &&
-            session.qr_code === null &&
-            session.pairing_code === null &&
-            !session.phone_number;
+          if (
+            session.status === "DISCONNECTED_NEED_QR" ||
+            session.status === "CONNECTED" ||
+            session.status === "AUTHENTICATING"
+          ) {
+            const isFreshResetRequested =
+              payload.old &&
+              payload.old.status !== "DISCONNECTED_NEED_QR" &&
+              session.status === "DISCONNECTED_NEED_QR" &&
+              session.qr_code === null &&
+              session.pairing_code === null &&
+              !session.phone_number;
 
-          if (isFreshResetRequested) {
-            const existingWorker = activeWorkers.get(session.tenant_id);
-            if (existingWorker) {
-              if (!existingWorker.getWorkerState().includes("RUNNING") || !existingWorker.getMetrics().isConnected) {
-                console.log(
-                  `[Orchestrator] Redefinição de sessão solicitada para tenant ${session.tenant_id}. Reiniciando worker do zero...`
-                );
-                await existingWorker.restartForFreshAuth(session.phone_number);
-                return;
+            if (isFreshResetRequested) {
+              const existingWorker = activeWorkers.get(session.tenant_id);
+              if (existingWorker) {
+                if (!existingWorker.getWorkerState().includes("RUNNING") || !existingWorker.getMetrics().isConnected) {
+                  console.log(
+                    `[Orchestrator] Redefinição de sessão solicitada para tenant ${session.tenant_id}. Reiniciando worker do zero...`
+                  );
+                  await existingWorker.restartForFreshAuth(session.phone_number);
+                  return;
+                } else {
+                  console.log(
+                    `[Orchestrator] Worker do tenant ${session.tenant_id} já está CONECTADO. Ignorando evento tardio de redefinição.`
+                  );
+                }
               } else {
-                console.log(
-                  `[Orchestrator] Worker do tenant ${session.tenant_id} já está CONECTADO. Ignorando evento tardio de redefinição.`
-                );
+                purgeBaileysSessionDir(session.tenant_id);
               }
+            }
+
+            await startWorkerForTenant(
+              session.tenant_id,
+              session.id,
+              true,
+              session.phone_number
+            );
+          } else if (session.status === "DISCONNECTED") {
+            const authDataPath = getBaileysAuthDataPath();
+            const sessionDir = path.join(authDataPath, `session-tenant_${session.tenant_id}`);
+            const hasSessionDir = fs.existsSync(sessionDir);
+
+            if (!hasSessionDir) {
+              console.log(
+                `[Orchestrator] Sessão desconectada e sem pasta em disco para tenant ${session.tenant_id}. Encerrando worker...`
+              );
+              await stopWorkerForTenant(session.tenant_id);
             } else {
-              purgeBaileysSessionDir(session.tenant_id);
+              console.log(
+                `[Orchestrator] Status DISCONNECTED recebido para tenant ${session.tenant_id}, mas mantendo worker rodando por possuir pasta em disco.`
+              );
             }
           }
-
-          await startWorkerForTenant(
-            session.tenant_id,
-            session.id,
-            true,
-            session.phone_number
-          );
-        } else if (session.status === "DISCONNECTED") {
-          const authDataPath = getBaileysAuthDataPath();
-          const sessionDir = path.join(authDataPath, `session-tenant_${session.tenant_id}`);
-          const hasSessionDir = fs.existsSync(sessionDir);
-
-          if (!hasSessionDir) {
-            console.log(
-              `[Orchestrator] Sessão desconectada e sem pasta em disco para tenant ${session.tenant_id}. Encerrando worker...`
-            );
-            await stopWorkerForTenant(session.tenant_id);
-          } else {
-            console.log(
-              `[Orchestrator] Status DISCONNECTED recebido para tenant ${session.tenant_id}, mas mantendo worker rodando por possuir pasta em disco.`
-            );
-          }
         }
-      }
-    )
-    .subscribe((status: string) => {
-      console.log(`[Orchestrator] Status do Canal Realtime Supabase: ${status}`);
-      if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-        console.error(
-          `[Orchestrator] ⚠️ Canal Realtime do Supabase em estado ${status}! Reconectando em 10s...`
-        );
-        setTimeout(() => {
-          console.log("[Orchestrator] 🔄 Tentando reconectar canal Realtime...");
-          try {
-            realtimeChannel.unsubscribe();
-          } catch (_) {}
-          realtimeChannel.subscribe((retryStatus: string) => {
-            console.log(
-              `[Orchestrator] Status do Canal Realtime Supabase (reconexão): ${retryStatus}`
-            );
-          });
-        }, 10000);
-      }
-    });
+      )
+      .subscribe((status: string) => {
+        console.log(`[Orchestrator] Status do Canal Realtime Supabase: ${status}`);
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          console.error(
+            `[Orchestrator] ⚠️ Canal Realtime do Supabase em estado ${status}! Recriando canal em 10s...`
+          );
+          setTimeout(() => {
+            console.log("[Orchestrator] 🔄 Recriando assinatura do canal Realtime...");
+            createRealtimeSubscription();
+          }, 10000);
+        }
+      });
+  };
+
+  createRealtimeSubscription();
 
   // Keep-alive: verifica periodicamente se o canal Realtime continua ativo
   setInterval(() => {
-    const channelState = (realtimeChannel as any).state;
+    const channelState = (realtimeChannel as any)?.state;
     if (channelState && channelState !== "joined" && channelState !== "joining") {
       console.warn(
-        `[Orchestrator] ⚠️ Keep-alive detectou canal Realtime em estado "${channelState}". Forçando reconexão...`
+        `[Orchestrator] ⚠️ Keep-alive detectou canal Realtime em estado "${channelState}". Recriando assinatura...`
       );
-      try {
-        realtimeChannel.unsubscribe();
-      } catch (_) {}
-      realtimeChannel.subscribe((status: string) => {
-        console.log(`[Orchestrator] Status do Canal Realtime (keep-alive): ${status}`);
-      });
+      createRealtimeSubscription();
     }
   }, 5 * 60 * 1000);
 
