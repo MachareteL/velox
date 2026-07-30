@@ -28,14 +28,26 @@ function getSystemChromePath(): string | null {
     }
   } else {
     const paths = [
+      "/usr/bin/google-chrome-stable",
+      "/usr/bin/google-chrome",
       "/usr/bin/chromium-browser",
       "/usr/bin/chromium",
-      "/usr/bin/google-chrome",
-      "/usr/bin/google-chrome-stable",
-      "/snap/bin/chromium",
     ];
     for (const p of paths) {
-      if (p && fs.existsSync(p)) return p;
+      if (p && fs.existsSync(p)) {
+        try {
+          const realPath = fs.realpathSync(p);
+          if (!realPath.includes("/snap/")) {
+            return p;
+          } else {
+            console.warn(
+              `[Worker] Ignorando executável em "${p}" pois aponta para Snap ("${realPath}"). O Snap é bloqueado pelo PM2 systemd service.`,
+            );
+          }
+        } catch {
+          if (!p.includes("/snap/")) return p;
+        }
+      }
     }
   }
   return null;
