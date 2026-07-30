@@ -34,7 +34,7 @@ const inviteRegex = new RegExp(process.env.TARGET_REGEX || defaultPattern, 'i');
 // Tabela de cálculo de prévia
 function calcularPrevia(distanciaStr) {
   const distancia = parseInt(distanciaStr, 10) || 0;
-  if (distancia <= 85) return 90;
+  if (distancia <= 85) return 50;
   if (distancia <= 170) return 120;
   return 150;
 }
@@ -89,9 +89,10 @@ async function processarConvite(url) {
   }
 }
 
-// Configurações do Puppeteer
+// Configurações do Puppeteer otimizadas
 const puppeteerConfig = {
   headless: 'new',
+  protocolTimeout: 360000,
   args: [
     '--no-sandbox',
     '--disable-setuid-sandbox',
@@ -99,7 +100,14 @@ const puppeteerConfig = {
     '--disable-accelerated-2d-canvas',
     '--no-first-run',
     '--no-zygote',
-    '--disable-gpu'
+    '--disable-gpu',
+    '--js-flags="--max-old-space-size=512"',
+    '--disable-site-isolation-trials',
+    '--disable-breakpad',
+    '--memory-pressure-off',
+    '--disable-background-networking',
+    '--disable-sync',
+    '--mute-audio'
   ]
 };
 
@@ -128,16 +136,25 @@ client.on('ready', () => {
 client.on('disconnected', (reason) => {
   console.warn('Conexão com WhatsApp perdida:', reason);
   console.log('Tentando reconectar...');
-  client.initialize();
+  setTimeout(() => {
+    client.initialize();
+  }, 5000);
 });
 
+// Registrar APENAS o evento 'message' (evitar duplo disparo com 'message_create')
 client.on('message', (msg) => {
   if (!msg.body) return;
 
   const match = msg.body.match(inviteRegex);
   if (match) {
     const targetUrl = match[0];
-    setImmediate(() => processarConvite(targetUrl));
+    setImmediate(async () => {
+      try {
+        await processarConvite(targetUrl);
+      } catch (err) {
+        console.error('Erro assíncrono ao processar convite:', err.message);
+      }
+    });
   }
 });
 

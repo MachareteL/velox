@@ -1,22 +1,22 @@
-import dotenv from 'dotenv';
-import path from 'path';
-import fs from 'fs';
-import { createSupabaseClient } from '@velox/database';
-import { WhatsAppWorker } from './whatsapp';
+import dotenv from "dotenv";
+import path from "path";
+import fs from "fs";
+import { createSupabaseClient } from "@velox/database";
+import { WhatsAppWorker } from "./whatsapp";
 
-dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
+dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
 dotenv.config();
 
-const SUPABASE_URL = process.env.SUPABASE_URL || '';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
+const SUPABASE_URL = process.env.SUPABASE_URL || "";
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-  console.error('[Worker] ERRO FATAL: SUPABASE_URL e SUPABASE_ANON_KEY são obrigatórias no .env!');
+  console.error("[Worker] ERRO FATAL: SUPABASE_URL e SUPABASE_ANON_KEY são obrigatórias no .env!");
   process.exit(1);
 }
 
 async function main() {
-  console.log('=== VELOX MULTI-TENANT WORKER ORCHESTRATOR INICIADO ===');
+  console.log("=== VELOX MULTI-TENANT WORKER ORCHESTRATOR INICIADO ===");
 
   const supabase = createSupabaseClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   const activeWorkers = new Map<string, WhatsAppWorker>();
@@ -29,7 +29,9 @@ async function main() {
     phoneNumber?: string | null
   ) => {
     if (tenantLocks.get(tenantId)) {
-      console.log(`[Orchestrator] Operação em andamento para tenant ${tenantId}. Ignorando chamada concorrente.`);
+      console.log(
+        `[Orchestrator] Operação em andamento para tenant ${tenantId}. Ignorando chamada concorrente.`
+      );
       return;
     }
     tenantLocks.set(tenantId, true);
@@ -46,22 +48,27 @@ async function main() {
       }
 
       if (worker && !worker.isRunning()) {
-        console.log(`[Orchestrator] Removendo e encerrando instância inativa anterior do tenant ${tenantId}...`);
+        console.log(
+          `[Orchestrator] Removendo e encerrando instância inativa anterior do tenant ${tenantId}...`
+        );
         await worker.stop();
         activeWorkers.delete(tenantId);
       }
 
       console.log(
         `[Orchestrator] Iniciando worker isolado para tenant ${tenantId} [Automação: ${
-          isActive ? 'LIGADA' : 'PAUSADA'
-        }]${phoneNumber ? ` [Telefone: ${phoneNumber}]` : ''}...`
+          isActive ? "LIGADA" : "PAUSADA"
+        }]${phoneNumber ? ` [Telefone: ${phoneNumber}]` : ""}...`
       );
       worker = new WhatsAppWorker(tenantId, sessionId, supabase, undefined, phoneNumber);
       worker.setIsActive(isActive);
       activeWorkers.set(tenantId, worker);
       await worker.start();
     } catch (err: any) {
-      console.error(`[Orchestrator] Erro ao iniciar worker para tenant ${tenantId}:`, err?.message);
+      console.error(
+        `[Orchestrator] Erro ao iniciar worker para tenant ${tenantId}:`,
+        err?.message
+      );
       if (worker) {
         try {
           await worker.stop();
@@ -69,7 +76,9 @@ async function main() {
         activeWorkers.delete(tenantId);
       }
       if (isActive) {
-        console.log(`[Orchestrator] Agendando tentativa de recuperação para tenant ${tenantId} em 30s...`);
+        console.log(
+          `[Orchestrator] Agendando tentativa de recuperação para tenant ${tenantId} em 30s...`
+        );
         setTimeout(() => {
           startWorkerForTenant(tenantId, sessionId, isActive, phoneNumber);
         }, 30000);
@@ -91,7 +100,10 @@ async function main() {
         activeWorkers.delete(tenantId);
       }
     } catch (err: any) {
-      console.error(`[Orchestrator] Erro ao encerrar worker para tenant ${tenantId}:`, err?.message);
+      console.error(
+        `[Orchestrator] Erro ao encerrar worker para tenant ${tenantId}:`,
+        err?.message
+      );
     } finally {
       tenantLocks.set(tenantId, false);
     }
@@ -99,52 +111,67 @@ async function main() {
 
   // 1. Carrega todas as sessões com is_active = true no boot
   const { data: activeSessions, error: bootErr } = await supabase
-    .from('whatsapp_sessions')
-    .select('*')
-    .eq('is_active', true);
+    .from("whatsapp_sessions")
+    .select("*")
+    .eq("is_active", true);
 
   if (bootErr) {
-    console.error('[Orchestrator] Erro ao carregar sessões no boot:', bootErr);
+    console.error("[Orchestrator] Erro ao carregar sessões no boot:", bootErr);
   }
 
   if (activeSessions && activeSessions.length > 0) {
-    console.log(`[Orchestrator] 🚀 Verificando ${activeSessions.length} sessões ativas no boot...`);
-    const authDataPath = process.env.WWEBJS_AUTH_PATH || path.resolve(process.cwd(), '.wwebjs_auth');
+    console.log(
+      `[Orchestrator] 🚀 Verificando ${activeSessions.length} sessões ativas no boot...`
+    );
+    const authDataPath =
+      process.env.WWEBJS_AUTH_PATH || path.resolve(process.cwd(), ".wwebjs_auth");
 
     for (const session of activeSessions) {
       const sessionDir = path.join(authDataPath, `session-tenant_${session.tenant_id}`);
       const hasSessionDir = fs.existsSync(sessionDir);
 
-      if (session.status === 'CONNECTED' || hasSessionDir) {
+      if (session.status === "CONNECTED" || hasSessionDir) {
         console.log(
           `[Orchestrator] Inicializando robô para tenant ${session.tenant_id} (Status DB: ${session.status}, Pasta em Disco: ${hasSessionDir})...`
         );
-        startWorkerForTenant(session.tenant_id, session.id, session.is_active !== false, session.phone_number).catch((err) => {
-          console.error(`[Orchestrator] Erro no boot para tenant ${session.tenant_id}:`, err?.message);
+        startWorkerForTenant(
+          session.tenant_id,
+          session.id,
+          session.is_active !== false,
+          session.phone_number
+        ).catch((err) => {
+          console.error(
+            `[Orchestrator] Erro no boot para tenant ${session.tenant_id}:`,
+            err?.message
+          );
         });
         // Stagger de 12s entre as inicializações para dar tempo ao Chromium carregar conversas na VM ARM64
         await new Promise((resolve) => setTimeout(resolve, 12000));
       }
     }
   } else {
-    console.log('[Orchestrator] Nenhum WhatsApp ativo previamente. Aguardando solicitações no banco...');
+    console.log(
+      "[Orchestrator] Nenhum WhatsApp ativo previamente. Aguardando solicitações no banco..."
+    );
   }
 
   // 2. Escuta global de alterações na tabela whatsapp_sessions para todos os tenants
   const realtimeChannel = supabase
-    .channel('multi-tenant-sessions-listener')
+    .channel("multi-tenant-sessions-listener")
     .on(
-      'postgres_changes',
+      "postgres_changes",
       {
-        event: '*',
-        schema: 'public',
-        table: 'whatsapp_sessions',
+        event: "*",
+        schema: "public",
+        table: "whatsapp_sessions",
       },
       async (payload: any) => {
-        if (payload.eventType === 'DELETE') {
+        if (payload.eventType === "DELETE") {
           const oldSession = payload.old;
           if (oldSession && oldSession.tenant_id) {
-            console.log(`[Orchestrator] Sessão deletada do banco [tenant: ${oldSession.tenant_id}]. Encerrando worker...`);
+            console.log(
+              `[Orchestrator] Sessão deletada do banco [tenant: ${oldSession.tenant_id}]. Encerrando worker...`
+            );
             await stopWorkerForTenant(oldSession.tenant_id);
           }
           return;
@@ -158,7 +185,9 @@ async function main() {
         );
 
         if (session.is_active === false) {
-          console.log(`[Orchestrator] Automação desativada pelo prestador [tenant: ${session.tenant_id}]. Pausando escuta...`);
+          console.log(
+            `[Orchestrator] Automação desativada pelo prestador [tenant: ${session.tenant_id}]. Pausando escuta...`
+          );
           const worker = activeWorkers.get(session.tenant_id);
           if (worker) {
             worker.setIsActive(false);
@@ -167,14 +196,14 @@ async function main() {
         }
 
         if (
-          session.status === 'DISCONNECTED_NEED_QR' ||
-          session.status === 'CONNECTED' ||
-          session.status === 'AUTHENTICATING'
+          session.status === "DISCONNECTED_NEED_QR" ||
+          session.status === "CONNECTED" ||
+          session.status === "AUTHENTICATING"
         ) {
           const isFreshResetRequested =
             payload.old &&
-            payload.old.status !== 'DISCONNECTED_NEED_QR' &&
-            session.status === 'DISCONNECTED_NEED_QR' &&
+            payload.old.status !== "DISCONNECTED_NEED_QR" &&
+            session.status === "DISCONNECTED_NEED_QR" &&
             session.qr_code === null &&
             session.pairing_code === null &&
             !session.phone_number;
@@ -188,18 +217,29 @@ async function main() {
               await existingWorker.restartForFreshAuth(session.phone_number);
               return;
             } else {
-              const authDataPath = process.env.WWEBJS_AUTH_PATH || path.resolve(process.cwd(), '.wwebjs_auth');
+              const authDataPath =
+                process.env.WWEBJS_AUTH_PATH || path.resolve(process.cwd(), ".wwebjs_auth");
               const sessionDir = path.join(authDataPath, `session-tenant_${session.tenant_id}`);
               if (fs.existsSync(sessionDir)) {
-                fs.rmSync(sessionDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+                fs.rmSync(sessionDir, {
+                  recursive: true,
+                  force: true,
+                  maxRetries: 10,
+                  retryDelay: 300,
+                });
               }
             }
           }
 
-          await startWorkerForTenant(session.tenant_id, session.id, true, session.phone_number);
-        } else if (session.status === 'DISCONNECTED') {
-          // NUNCA encerrar o worker de um tenant ativo se ele possui sessão salva em disco
-          const authDataPath = process.env.WWEBJS_AUTH_PATH || path.resolve(process.cwd(), '.wwebjs_auth');
+          await startWorkerForTenant(
+            session.tenant_id,
+            session.id,
+            true,
+            session.phone_number
+          );
+        } else if (session.status === "DISCONNECTED") {
+          const authDataPath =
+            process.env.WWEBJS_AUTH_PATH || path.resolve(process.cwd(), ".wwebjs_auth");
           const sessionDir = path.join(authDataPath, `session-tenant_${session.tenant_id}`);
           const hasSessionDir = fs.existsSync(sessionDir);
 
@@ -210,7 +250,7 @@ async function main() {
             await stopWorkerForTenant(session.tenant_id);
           } else {
             console.log(
-              `[Orchestrator] Status DISCONNECTED recebido para tenant ${session.tenant_id}, mas mantendo worker rodando em segundo plano por possuir pasta em disco.`
+              `[Orchestrator] Status DISCONNECTED recebido para tenant ${session.tenant_id}, mas mantendo worker rodando por possuir pasta em disco.`
             );
           }
         }
@@ -218,53 +258,76 @@ async function main() {
     )
     .subscribe((status: string) => {
       console.log(`[Orchestrator] Status do Canal Realtime Supabase: ${status}`);
-      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-        console.error(`[Orchestrator] ⚠️ Canal Realtime do Supabase em estado ${status}! Reconectando em 10s...`);
+      if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+        console.error(
+          `[Orchestrator] ⚠️ Canal Realtime do Supabase em estado ${status}! Reconectando em 10s...`
+        );
         setTimeout(() => {
-          console.log('[Orchestrator] 🔄 Tentando reconectar canal Realtime...');
+          console.log("[Orchestrator] 🔄 Tentando reconectar canal Realtime...");
           try {
             realtimeChannel.unsubscribe();
           } catch (_) {}
           realtimeChannel.subscribe((retryStatus: string) => {
-            console.log(`[Orchestrator] Status do Canal Realtime Supabase (reconexão): ${retryStatus}`);
+            console.log(
+              `[Orchestrator] Status do Canal Realtime Supabase (reconexão): ${retryStatus}`
+            );
           });
         }, 10000);
       }
     });
 
-  // Keep-alive: verifica periodicamente se o canal Realtime do Supabase continua ativo
+  // Keep-alive: verifica periodicamente se o canal Realtime continua ativo
   setInterval(() => {
     const channelState = (realtimeChannel as any).state;
-    if (channelState && channelState !== 'joined' && channelState !== 'joining') {
-      console.warn(`[Orchestrator] ⚠️ Keep-alive detectou canal Realtime em estado "${channelState}". Forçando reconexão...`);
+    if (channelState && channelState !== "joined" && channelState !== "joining") {
+      console.warn(
+        `[Orchestrator] ⚠️ Keep-alive detectou canal Realtime em estado "${channelState}". Forçando reconexão...`
+      );
       try {
         realtimeChannel.unsubscribe();
       } catch (_) {}
       realtimeChannel.subscribe((status: string) => {
-        console.log(`[Orchestrator] Status do Canal Realtime Supabase (keep-alive): ${status}`);
+        console.log(`[Orchestrator] Status do Canal Realtime (keep-alive): ${status}`);
       });
     }
-  }, 5 * 60 * 1000); // A cada 5 minutos
+  }, 5 * 60 * 1000);
 
-  process.on('uncaughtException', (err) => {
-    console.error('[Orchestrator] Exceção não tratada:', err.message);
+  // Tratamento gracioso de desligamento do processo (SIGINT/SIGTERM)
+  const shutdownGracefully = async (signal: string) => {
+    console.log(`[Orchestrator] Recebido sinal de encerramento ${signal}. Encerrando todos os workers...`);
+    for (const [tId, worker] of activeWorkers.entries()) {
+      try {
+        console.log(`[Orchestrator] Encerrando worker do tenant ${tId}...`);
+        await worker.stop();
+      } catch (err: any) {
+        console.warn(`[Orchestrator] Erro ao encerrar worker do tenant ${tId}: ${err?.message}`);
+      }
+    }
+    process.exit(0);
+  };
+
+  process.on("SIGINT", () => shutdownGracefully("SIGINT"));
+  process.on("SIGTERM", () => shutdownGracefully("SIGTERM"));
+
+  process.on("uncaughtException", (err) => {
+    console.error("[Orchestrator] Exceção não tratada capturada:", err.message);
   });
 
-  process.on('unhandledRejection', (reason: any) => {
-    const msg = reason?.message || String(reason || '');
+  process.on("unhandledRejection", (reason: any) => {
+    const msg = reason?.message || String(reason || "");
     if (
-      msg.includes('Execution context was destroyed') ||
-      msg.includes('Target closed') ||
-      msg.includes('Protocol error') ||
-      msg.includes('detached Frame')
+      msg.includes("Execution context was destroyed") ||
+      msg.includes("Target closed") ||
+      msg.includes("Protocol error") ||
+      msg.includes("detached Frame")
     ) {
-      console.warn(`[Orchestrator] Reinicialização de página Chromium detectada (${msg.split('\n')[0]}).`);
+      console.warn(`[Orchestrator] Reinicialização de página Chromium detectada (${msg.split("\n")[0]}).`);
       return;
     }
-    console.error('[Orchestrator] Rejeição não tratada:', reason);
+    console.error("[Orchestrator] Rejeição não tratada capturada:", reason);
   });
 }
 
 main().catch((err) => {
-  console.error('[Orchestrator] Erro fatal no orquestrador:', err);
+  console.error("[Orchestrator] Erro fatal no orquestrador:", err);
 });
