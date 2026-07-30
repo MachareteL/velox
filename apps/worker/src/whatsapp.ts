@@ -213,6 +213,7 @@ export class WhatsAppWorker {
   private createClient(): Client {
     const puppeteerConfig: any = {
       headless: "new",
+      protocolTimeout: 180000,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
