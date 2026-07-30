@@ -3,6 +3,7 @@ import path from "path";
 import fs from "fs";
 import { createSupabaseClient } from "@velox/database";
 import { WhatsAppWorker } from "./whatsapp";
+import { getBaileysAuthDataPath, purgeBaileysSessionDir } from "./baileys-provider";
 
 dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
 dotenv.config();
@@ -123,8 +124,7 @@ async function main() {
     console.log(
       `[Orchestrator] 🚀 Verificando ${activeSessions.length} sessões ativas no boot...`
     );
-    const authDataPath =
-      process.env.WWEBJS_AUTH_PATH || path.resolve(process.cwd(), ".wwebjs_auth");
+    const authDataPath = getBaileysAuthDataPath();
 
     for (const session of activeSessions) {
       const sessionDir = path.join(authDataPath, `session-tenant_${session.tenant_id}`);
@@ -132,7 +132,7 @@ async function main() {
 
       if (session.status === "CONNECTED" || hasSessionDir) {
         console.log(
-          `[Orchestrator] Inicializando robô para tenant ${session.tenant_id} (Status DB: ${session.status}, Pasta em Disco: ${hasSessionDir})...`
+          `[Orchestrator] Inicializando robô Baileys para tenant ${session.tenant_id} (Status DB: ${session.status}, Pasta em Disco: ${hasSessionDir})...`
         );
         startWorkerForTenant(
           session.tenant_id,
@@ -145,8 +145,8 @@ async function main() {
             err?.message
           );
         });
-        // Stagger de 12s entre as inicializações para dar tempo ao Chromium carregar conversas na VM ARM64
-        await new Promise((resolve) => setTimeout(resolve, 12000));
+        // Stagger de 500ms entre as inicializações Baileys
+        await new Promise((resolve) => setTimeout(resolve, 500));
       }
     }
   } else {
@@ -209,25 +209,21 @@ async function main() {
             !session.phone_number;
 
           if (isFreshResetRequested) {
-            console.log(
-              `[Orchestrator] Redefinição de sessão solicitada para tenant ${session.tenant_id}. Reiniciando worker do zero...`
-            );
             const existingWorker = activeWorkers.get(session.tenant_id);
             if (existingWorker) {
-              await existingWorker.restartForFreshAuth(session.phone_number);
-              return;
-            } else {
-              const authDataPath =
-                process.env.WWEBJS_AUTH_PATH || path.resolve(process.cwd(), ".wwebjs_auth");
-              const sessionDir = path.join(authDataPath, `session-tenant_${session.tenant_id}`);
-              if (fs.existsSync(sessionDir)) {
-                fs.rmSync(sessionDir, {
-                  recursive: true,
-                  force: true,
-                  maxRetries: 10,
-                  retryDelay: 300,
-                });
+              if (!existingWorker.getWorkerState().includes("RUNNING") || !existingWorker.getMetrics().isConnected) {
+                console.log(
+                  `[Orchestrator] Redefinição de sessão solicitada para tenant ${session.tenant_id}. Reiniciando worker do zero...`
+                );
+                await existingWorker.restartForFreshAuth(session.phone_number);
+                return;
+              } else {
+                console.log(
+                  `[Orchestrator] Worker do tenant ${session.tenant_id} já está CONECTADO. Ignorando evento tardio de redefinição.`
+                );
               }
+            } else {
+              purgeBaileysSessionDir(session.tenant_id);
             }
           }
 
@@ -238,8 +234,7 @@ async function main() {
             session.phone_number
           );
         } else if (session.status === "DISCONNECTED") {
-          const authDataPath =
-            process.env.WWEBJS_AUTH_PATH || path.resolve(process.cwd(), ".wwebjs_auth");
+          const authDataPath = getBaileysAuthDataPath();
           const sessionDir = path.join(authDataPath, `session-tenant_${session.tenant_id}`);
           const hasSessionDir = fs.existsSync(sessionDir);
 
