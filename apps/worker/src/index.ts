@@ -34,8 +34,9 @@ async function main() {
     }
     tenantLocks.set(tenantId, true);
 
+    let worker: WhatsAppWorker | undefined = activeWorkers.get(tenantId);
+
     try {
-      let worker = activeWorkers.get(tenantId);
       if (worker && worker.isRunning()) {
         worker.setIsActive(isActive);
         if (phoneNumber && phoneNumber !== worker.getPhoneNumber()) {
@@ -61,6 +62,18 @@ async function main() {
       await worker.start();
     } catch (err: any) {
       console.error(`[Orchestrator] Erro ao iniciar worker para tenant ${tenantId}:`, err?.message);
+      if (worker) {
+        try {
+          await worker.stop();
+        } catch (_) {}
+        activeWorkers.delete(tenantId);
+      }
+      if (isActive) {
+        console.log(`[Orchestrator] Agendando tentativa de recuperação para tenant ${tenantId} em 30s...`);
+        setTimeout(() => {
+          startWorkerForTenant(tenantId, sessionId, isActive, phoneNumber);
+        }, 30000);
+      }
     } finally {
       tenantLocks.set(tenantId, false);
     }

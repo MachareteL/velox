@@ -200,6 +200,11 @@ export class WhatsAppWorker {
         "--disable-ipc-flooding-protection",
         "--no-default-browser-check",
       ],
+      env: {
+        ...process.env,
+        SYSTEMD_IGNORE_CHROOT: "1",
+        DBUS_SESSION_BUS_ADDRESS: "/dev/null",
+      },
     };
 
     const systemChromePath = getSystemChromePath();
@@ -1013,6 +1018,22 @@ export class WhatsAppWorker {
         `[Worker] Erro ao reiniciar worker pós-zumbi para tenant ${this.tenantId}:`,
         err?.message,
       );
+      console.log(
+        `[Worker] Agendando nova tentativa de inicialização para tenant ${this.tenantId} em 20s...`,
+      );
+      if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = setTimeout(async () => {
+        try {
+          cleanSessionLockFiles(this.tenantId);
+          this.client = this.createClient();
+          await this.start();
+        } catch (retryErr: any) {
+          console.error(
+            `[Worker] Falha na tentativa secundária de inicialização para tenant ${this.tenantId}:`,
+            retryErr?.message,
+          );
+        }
+      }, 20000);
     }
   }
 
