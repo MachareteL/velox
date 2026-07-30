@@ -212,7 +212,7 @@ export class WhatsAppWorker {
 
   private createClient(): Client {
     const puppeteerConfig: any = {
-      headless: "new",
+      headless: true,
       protocolTimeout: 180000,
       args: [
         "--no-sandbox",
@@ -256,9 +256,7 @@ export class WhatsAppWorker {
         dataPath: authDataPath,
       }),
       webVersionCache: {
-        type: "remote",
-        remotePath:
-          "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html",
+        type: "local",
       },
       puppeteer: puppeteerConfig,
     });
