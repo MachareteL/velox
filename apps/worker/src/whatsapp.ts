@@ -11,34 +11,30 @@ import { VeloxScraper } from "./scraper";
 import { calcularPrevia } from "./calculator";
 import path from "path";
 
-function isUbuntuSnapStub(filePath: string): boolean {
-  try {
-    const realPath = fs.realpathSync(filePath);
-    if (realPath.includes("/snap/")) return true;
-
-    const stat = fs.statSync(filePath);
-    if (stat.isFile() && stat.size < 4096) {
-      const content = fs.readFileSync(filePath, "utf8");
-      if (content.includes("snap install") || content.includes("chromium snap")) {
-        return true;
-      }
-    }
-  } catch {}
-  return false;
-}
-
+/**
+ * Resolve o caminho do executável do Chromium/Chrome.
+ *
+ * Precedência:
+ *  1. PUPPETEER_EXECUTABLE_PATH do .env — se o arquivo existir, SEMPRE usa (respeita a escolha do usuário).
+ *  2. Auto-detecção de binários nativos no SO.
+ *  3. null — Puppeteer usará o Chromium bundled.
+ */
 function getSystemChromePath(): string | null {
+  // 1. Variável de ambiente explícita: respeitar incondicionalmente
   if (process.env.PUPPETEER_EXECUTABLE_PATH) {
     const envPath = process.env.PUPPETEER_EXECUTABLE_PATH;
-    if (fs.existsSync(envPath) && !isUbuntuSnapStub(envPath)) {
-      return envPath;
-    } else {
-      console.warn(
-        `[Worker] PUPPETEER_EXECUTABLE_PATH em .env ("${envPath}") não existe ou é um atalho do Snap. Buscando navegador nativo...`,
+    if (fs.existsSync(envPath)) {
+      console.log(
+        `[Worker] Utilizando navegador definido em .env: ${envPath}`,
       );
+      return envPath;
     }
+    console.warn(
+      `[Worker] PUPPETEER_EXECUTABLE_PATH em .env ("${envPath}") não existe no disco. Buscando navegador nativo...`,
+    );
   }
 
+  // 2. Auto-detecção por plataforma
   if (process.platform === "win32") {
     const paths = [
       "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
@@ -47,10 +43,14 @@ function getSystemChromePath(): string | null {
         "\\Google\\Chrome\\Application\\chrome.exe",
     ];
     for (const p of paths) {
-      if (p && fs.existsSync(p)) return p;
+      if (p && fs.existsSync(p)) {
+        console.log(`[Worker] Utilizando navegador Chrome instalado em: ${p}`);
+        return p;
+      }
     }
   } else {
     const paths = [
+      "/snap/bin/chromium",
       "/usr/bin/chromium",
       "/usr/bin/google-chrome-stable",
       "/usr/bin/google-chrome",
@@ -58,16 +58,15 @@ function getSystemChromePath(): string | null {
     ];
     for (const p of paths) {
       if (p && fs.existsSync(p)) {
-        if (!isUbuntuSnapStub(p)) {
-          return p;
-        } else {
-          console.warn(
-            `[Worker] Ignorando executável em "${p}" pois aponta para o gerador de atalhos do Snap. O Snap é bloqueado pelo PM2 systemd service.`,
-          );
-        }
+        console.log(`[Worker] Utilizando navegador Chrome instalado em: ${p}`);
+        return p;
       }
     }
   }
+
+  console.warn(
+    "[Worker] Nenhum Chromium/Chrome encontrado. Puppeteer usará o Chromium embutido.",
+  );
   return null;
 }
 
