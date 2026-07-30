@@ -172,6 +172,8 @@ async function main() {
           session.status === 'AUTHENTICATING'
         ) {
           const isFreshResetRequested =
+            payload.old &&
+            payload.old.status !== 'DISCONNECTED_NEED_QR' &&
             session.status === 'DISCONNECTED_NEED_QR' &&
             session.qr_code === null &&
             session.pairing_code === null &&
