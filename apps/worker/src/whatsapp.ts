@@ -190,6 +190,10 @@ export class WhatsAppWorker {
   private healthCheckInterval: NodeJS.Timeout | null = null;
   private consecutiveHealthFailures: number = 0;
 
+  // Activity Heartbeat: detecta quando o WhatsApp para de receber mensagens (snooze/morte silenciosa do WebSocket)
+  private lastMessageReceivedAt: number = 0;
+  private readonly MAX_SILENCE_MS: number = 30 * 60 * 1000; // 30 minutos sem nenhuma mensagem = provável snooze
+
   constructor(
     private tenantId: string,
     private sessionId: string,
@@ -213,7 +217,7 @@ export class WhatsAppWorker {
   private createClient(): Client {
     const puppeteerConfig: any = {
       headless: true,
-      protocolTimeout: 180000,
+      protocolTimeout: 360000, // 6 minutos — margem de segurança para ARM64 com 3+ tenants carregando conversas simultaneamente
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
@@ -230,6 +234,8 @@ export class WhatsAppWorker {
         "--disable-component-update",
         "--disable-ipc-flooding-protection",
         "--no-default-browser-check",
+        "--disable-hang-monitor",
+        "--disable-features=TranslateUI,BlinkGenPropertyTrees",
       ],
       env: {
         ...process.env,
@@ -768,6 +774,10 @@ export class WhatsAppWorker {
     const processIncomingMessage = async (msg: any) => {
       if (!msg || !msg.body) return;
 
+      // Atualiza timestamp de atividade para TODA mensagem (incluindo grupos, broadcasts, etc)
+      // antes de qualquer filtro — isso alimenta o Activity Heartbeat anti-snooze
+      this.lastMessageReceivedAt = Date.now();
+
       const sender = msg.from || "";
       if (
         sender.endsWith("@g.us") ||
@@ -989,6 +999,24 @@ export class WhatsAppWorker {
 
       if (state === "CONNECTED") {
         this.consecutiveHealthFailures = 0;
+
+        // ── Activity Heartbeat: detecta snooze silencioso do WebSocket ──
+        // Se estamos "CONNECTED" mas nenhuma mensagem chegou nos últimos MAX_SILENCE_MS,
+        // o WebSocket interno do WhatsApp Web provavelmente morreu silenciosamente.
+        if (
+          this.lastMessageReceivedAt > 0 &&
+          Date.now() - this.lastMessageReceivedAt > this.MAX_SILENCE_MS
+        ) {
+          const silenceMin = Math.round(
+            (Date.now() - this.lastMessageReceivedAt) / 60000,
+          );
+          console.warn(
+            `[Worker HealthCheck] 😴 SNOOZE DETECTADO para tenant ${this.tenantId}: nenhuma mensagem recebida há ${silenceMin} minutos. Reiniciando proativamente...`,
+          );
+          await this.handleZombieReconnection(
+            `Silêncio de ${silenceMin} min detectado pelo Activity Heartbeat`,
+          );
+        }
         return;
       }
 
@@ -1075,6 +1103,11 @@ export class WhatsAppWorker {
     }
     this.starting = true;
     this.sessionStartTimestamp = Date.now();
+    this.lastMessageReceivedAt = Date.now(); // Inicializa para evitar falso-positivo de snooze no boot
+
+    // Limpar arquivos de trava antes de inicializar para evitar falhas de abertura do Chromium
+    cleanSessionLockFiles(this.tenantId);
+
     try {
       console.log(
         `[Worker] Inicializando cliente WhatsApp para tenant ${this.tenantId}...`,

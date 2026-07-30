@@ -122,8 +122,8 @@ async function main() {
         startWorkerForTenant(session.tenant_id, session.id, session.is_active !== false, session.phone_number).catch((err) => {
           console.error(`[Orchestrator] Erro no boot para tenant ${session.tenant_id}:`, err?.message);
         });
-        // Stagger de 1500ms entre as inicializações para distribuir a carga de CPU na VM
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+        // Stagger de 12s entre as inicializações para dar tempo ao Chromium carregar conversas na VM ARM64
+        await new Promise((resolve) => setTimeout(resolve, 12000));
       }
     }
   } else {
@@ -131,7 +131,7 @@ async function main() {
   }
 
   // 2. Escuta global de alterações na tabela whatsapp_sessions para todos os tenants
-  supabase
+  const realtimeChannel = supabase
     .channel('multi-tenant-sessions-listener')
     .on(
       'postgres_changes',
@@ -216,7 +216,33 @@ async function main() {
     )
     .subscribe((status: string) => {
       console.log(`[Orchestrator] Status do Canal Realtime Supabase: ${status}`);
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        console.error(`[Orchestrator] ⚠️ Canal Realtime do Supabase em estado ${status}! Reconectando em 10s...`);
+        setTimeout(() => {
+          console.log('[Orchestrator] 🔄 Tentando reconectar canal Realtime...');
+          try {
+            realtimeChannel.unsubscribe();
+          } catch (_) {}
+          realtimeChannel.subscribe((retryStatus: string) => {
+            console.log(`[Orchestrator] Status do Canal Realtime Supabase (reconexão): ${retryStatus}`);
+          });
+        }, 10000);
+      }
     });
+
+  // Keep-alive: verifica periodicamente se o canal Realtime do Supabase continua ativo
+  setInterval(() => {
+    const channelState = (realtimeChannel as any).state;
+    if (channelState && channelState !== 'joined' && channelState !== 'joining') {
+      console.warn(`[Orchestrator] ⚠️ Keep-alive detectou canal Realtime em estado "${channelState}". Forçando reconexão...`);
+      try {
+        realtimeChannel.unsubscribe();
+      } catch (_) {}
+      realtimeChannel.subscribe((status: string) => {
+        console.log(`[Orchestrator] Status do Canal Realtime Supabase (keep-alive): ${status}`);
+      });
+    }
+  }, 5 * 60 * 1000); // A cada 5 minutos
 
   process.on('uncaughtException', (err) => {
     console.error('[Orchestrator] Exceção não tratada:', err.message);
