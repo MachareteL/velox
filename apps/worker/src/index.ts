@@ -119,9 +119,11 @@ async function main() {
         console.log(
           `[Orchestrator] Inicializando robô para tenant ${session.tenant_id} (Status DB: ${session.status}, Pasta em Disco: ${hasSessionDir})...`
         );
-        await startWorkerForTenant(session.tenant_id, session.id, session.is_active !== false, session.phone_number);
-        // Stagger de 800ms para suavizar a carga de CPU da VM durante o restart
-        await new Promise((resolve) => setTimeout(resolve, 800));
+        startWorkerForTenant(session.tenant_id, session.id, session.is_active !== false, session.phone_number).catch((err) => {
+          console.error(`[Orchestrator] Erro no boot para tenant ${session.tenant_id}:`, err?.message);
+        });
+        // Stagger de 1500ms entre as inicializações para distribuir a carga de CPU na VM
+        await new Promise((resolve) => setTimeout(resolve, 1500));
       }
     }
   } else {
