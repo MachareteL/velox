@@ -11,25 +11,30 @@ import { VeloxScraper } from "./scraper";
 import { calcularPrevia } from "./calculator";
 import path from "path";
 
+function isUbuntuSnapStub(filePath: string): boolean {
+  try {
+    const realPath = fs.realpathSync(filePath);
+    if (realPath.includes("/snap/")) return true;
+
+    const stat = fs.statSync(filePath);
+    if (stat.isFile() && stat.size < 4096) {
+      const content = fs.readFileSync(filePath, "utf8");
+      if (content.includes("snap install") || content.includes("chromium snap")) {
+        return true;
+      }
+    }
+  } catch {}
+  return false;
+}
+
 function getSystemChromePath(): string | null {
   if (process.env.PUPPETEER_EXECUTABLE_PATH) {
     const envPath = process.env.PUPPETEER_EXECUTABLE_PATH;
-    if (fs.existsSync(envPath)) {
-      try {
-        const realPath = fs.realpathSync(envPath);
-        if (!realPath.includes("/snap/")) {
-          return envPath;
-        } else {
-          console.warn(
-            `[Worker] Ignorando PUPPETEER_EXECUTABLE_PATH em "${envPath}" pois aponta para Snap ("${realPath}").`,
-          );
-        }
-      } catch {
-        if (!envPath.includes("/snap/")) return envPath;
-      }
+    if (fs.existsSync(envPath) && !isUbuntuSnapStub(envPath)) {
+      return envPath;
     } else {
       console.warn(
-        `[Worker] PUPPETEER_EXECUTABLE_PATH definido em .env ("${envPath}") não existe no disco. Buscando navegador nativo...`,
+        `[Worker] PUPPETEER_EXECUTABLE_PATH em .env ("${envPath}") não existe ou é um atalho do Snap. Buscando navegador nativo...`,
       );
     }
   }
@@ -46,24 +51,19 @@ function getSystemChromePath(): string | null {
     }
   } else {
     const paths = [
+      "/usr/bin/chromium",
       "/usr/bin/google-chrome-stable",
       "/usr/bin/google-chrome",
       "/usr/bin/chromium-browser",
-      "/usr/bin/chromium",
     ];
     for (const p of paths) {
       if (p && fs.existsSync(p)) {
-        try {
-          const realPath = fs.realpathSync(p);
-          if (!realPath.includes("/snap/")) {
-            return p;
-          } else {
-            console.warn(
-              `[Worker] Ignorando executável em "${p}" pois aponta para Snap ("${realPath}"). O Snap é bloqueado pelo PM2 systemd service.`,
-            );
-          }
-        } catch {
-          if (!p.includes("/snap/")) return p;
+        if (!isUbuntuSnapStub(p)) {
+          return p;
+        } else {
+          console.warn(
+            `[Worker] Ignorando executável em "${p}" pois aponta para o gerador de atalhos do Snap. O Snap é bloqueado pelo PM2 systemd service.`,
+          );
         }
       }
     }
