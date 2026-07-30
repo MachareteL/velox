@@ -13,7 +13,25 @@ import path from "path";
 
 function getSystemChromePath(): string | null {
   if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-    return process.env.PUPPETEER_EXECUTABLE_PATH;
+    const envPath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    if (fs.existsSync(envPath)) {
+      try {
+        const realPath = fs.realpathSync(envPath);
+        if (!realPath.includes("/snap/")) {
+          return envPath;
+        } else {
+          console.warn(
+            `[Worker] Ignorando PUPPETEER_EXECUTABLE_PATH em "${envPath}" pois aponta para Snap ("${realPath}").`,
+          );
+        }
+      } catch {
+        if (!envPath.includes("/snap/")) return envPath;
+      }
+    } else {
+      console.warn(
+        `[Worker] PUPPETEER_EXECUTABLE_PATH definido em .env ("${envPath}") não existe no disco. Buscando navegador nativo...`,
+      );
+    }
   }
 
   if (process.platform === "win32") {
