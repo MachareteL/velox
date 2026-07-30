@@ -7,6 +7,8 @@ module.exports = {
       time: true,
       env: {
         TZ: 'America/Sao_Paulo',
+        SYSTEMD_IGNORE_CHROOT: '1',
+        DBUS_SESSION_BUS_ADDRESS: '/dev/null',
       },
     },
   ],
