@@ -1,6 +1,4 @@
 import QRCode from "qrcode";
-import fs from "fs";
-import path from "path";
 import { SupabaseClient } from "@supabase/supabase-js";
 import {
   recordCapturedCall,
@@ -35,24 +33,14 @@ export interface WorkerMetrics {
   isConnected: boolean;
   workerUptimeSeconds: number;
   sessionUptimeSeconds: number;
-  chromiumUptimeSeconds: number;
   lastMessageReceivedAt: string | null;
   lastEventAt: string | null;
-  lastLoadingScreenAt: string | null;
-  lastStateChangeAt: string | null;
   lastAuthenticatedAt: string | null;
   lastReadyAt: string | null;
   lastDisconnectedAt: string | null;
-  lastAuthFailureAt: string | null;
   lastReconnectAt: string | null;
-  lastRestartAt: string | null;
-  lastPreventiveReloadAt: string | null;
   reconnectAttempts: number;
   reconnectAttemptsTotal: number;
-  zombieDetectCount: number;
-  autoRestartCount: number;
-  preventiveReloadCount: number;
-  chromiumCrashCount: number;
   memoryUsageMb: {
     rss: number;
     heapTotal: number;
@@ -86,27 +74,12 @@ export class WhatsAppWorker {
   // Instrumentação e Telemetria (Timestamps de Ciclo de Vida)
   private workerStartTimestamp: number = Date.now();
   private sessionStartTimestamp: number = 0;
-
   private lastMessageReceivedAt: number = 0;
   private lastEventAt: number = Date.now();
-  private lastLoadingScreenAt: number = 0;
-  private lastStateChangeAt: number = 0;
   private lastAuthenticatedAt: number = 0;
   private lastReadyAt: number = 0;
   private lastDisconnectedAt: number = 0;
-  private lastAuthFailureAt: number = 0;
   private lastReconnectAt: number = 0;
-  private lastRestartAt: number = 0;
-  private lastPreventiveReloadAt: number = 0;
-
-  // Contadores de Incidentes para Diagnóstico
-  private zombieDetectCount: number = 0;
-  private autoRestartCount: number = 0;
-  private preventiveReloadCount: number = 0;
-  private chromiumCrashCount: number = 0;
-
-  // Deduplicação LRU com TTL para IDs de Mensagem
-  private processedMsgIds = new Map<string, number>();
 
   constructor(
     private tenantId: string,
@@ -229,422 +202,459 @@ export class WhatsAppWorker {
     }
   }
 
+  // ── Event Wiring ──────────────────────────────────────────────────────
+
   /**
-   * Configuração de ouvintes de eventos da camada BaileysProvider.
+   * Conecta os eventos do provider aos handlers especializados.
    */
   private setupListenersForProvider(provider: WhatsAppProvider): void {
-    // Evento de geração de QR Code
-    provider.on("qr", async (qrText: string) => {
-      this.lastEventAt = Date.now();
-      this.qrCount++;
+    provider.on("qr", (qr) => this.handleQrGenerated(qr));
+    provider.on("authenticated", () => this.handleAuthenticated());
+    provider.on("ready", () => this.handleReady());
+    provider.on("disconnected", (reason, isLoggedOut) => this.handleDisconnected(reason, isLoggedOut));
+    provider.on("message", (msg) => this.handleIncomingMessage(msg));
+  }
 
-      if (this.qrCount > this.maxQrAttempts) {
-        if (this.qrCount === this.maxQrAttempts + 1) {
-          console.warn(
-            `[Worker Anti-Spam] Limite de ${this.maxQrAttempts} renovações de QR Code atingido para tenant ${this.tenantId}. Encerrando socket inativo...`
-          );
-          await updateSessionStatus(
-            this.supabase,
-            this.sessionId,
-            "DISCONNECTED",
-            null,
-            "vps-worker-01",
-            null,
-            null
-          );
-          await this.stop();
-        }
-        return;
-      }
+  // ── Lifecycle Event Handlers ──────────────────────────────────────────
 
-      console.log(
-        `[Worker Baileys] Geração de autenticação #${this.qrCount}/${this.maxQrAttempts} recebida para tenant ${this.tenantId}`
-      );
+  /**
+   * Handler de geração de QR Code com proteção anti-spam.
+   */
+  private async handleQrGenerated(qrText: string): Promise<void> {
+    this.lastEventAt = Date.now();
+    this.qrCount++;
 
-      try {
-        const qrDataUrl = await QRCode.toDataURL(qrText);
-
+    if (this.qrCount > this.maxQrAttempts) {
+      if (this.qrCount === this.maxQrAttempts + 1) {
+        console.warn(
+          `[Worker Anti-Spam] Limite de ${this.maxQrAttempts} renovações de QR Code atingido para tenant ${this.tenantId}. Encerrando socket inativo...`
+        );
         await updateSessionStatus(
           this.supabase,
           this.sessionId,
-          "DISCONNECTED_NEED_QR",
-          qrDataUrl,
+          "DISCONNECTED",
+          null,
           "vps-worker-01",
           null,
           null
         );
-
-        await recordSystemLog(this.supabase, {
-          tenant_id: this.tenantId,
-          level: "INFO",
-          event_type: "QR_GENERATED",
-          message: "Novo Código de Conexão (QR Code) gerado via Baileys.",
-        });
-      } catch (err: any) {
-        console.error("[Worker Baileys] Erro ao converter QR Code:", err.message);
+        await this.stop();
       }
-    });
+      return;
+    }
 
-    // Evento de autenticação em andamento
-    provider.on("authenticated", async () => {
-      this.lastEventAt = Date.now();
-      this.lastAuthenticatedAt = Date.now();
-      console.log(
-        `[Worker Baileys] ✨ Conexão autenticada/reconectando para tenant ${this.tenantId}...`
-      );
+    console.log(
+      `[Worker Baileys] Geração de autenticação #${this.qrCount}/${this.maxQrAttempts} recebida para tenant ${this.tenantId}`
+    );
+
+    try {
+      const qrDataUrl = await QRCode.toDataURL(qrText);
 
       await updateSessionStatus(
         this.supabase,
         this.sessionId,
-        "AUTHENTICATING",
+        "DISCONNECTED_NEED_QR",
+        qrDataUrl,
+        "vps-worker-01",
+        null,
+        null
+      );
+
+      await recordSystemLog(this.supabase, {
+        tenant_id: this.tenantId,
+        level: "INFO",
+        event_type: "QR_GENERATED",
+        message: "Novo Código de Conexão (QR Code) gerado via Baileys.",
+      });
+    } catch (err: any) {
+      console.error("[Worker Baileys] Erro ao converter QR Code:", err.message);
+    }
+  }
+
+  /**
+   * Handler de autenticação em andamento.
+   */
+  private async handleAuthenticated(): Promise<void> {
+    this.lastEventAt = Date.now();
+    this.lastAuthenticatedAt = Date.now();
+    console.log(
+      `[Worker Baileys] ✨ Conexão autenticada/reconectando para tenant ${this.tenantId}...`
+    );
+
+    await updateSessionStatus(
+      this.supabase,
+      this.sessionId,
+      "AUTHENTICATING",
+      null,
+      "vps-worker-01",
+      null,
+      this.phoneNumber || null
+    );
+
+    await recordSystemLog(this.supabase, {
+      tenant_id: this.tenantId,
+      level: "INFO",
+      event_type: "SESSION_AUTHENTICATED",
+      message: "Autenticação Baileys em andamento...",
+    });
+  }
+
+  /**
+   * Handler de sessão pronta e conectada.
+   */
+  private async handleReady(): Promise<void> {
+    this.lastEventAt = Date.now();
+    this.lastReadyAt = Date.now();
+    console.log(`[Worker Baileys] Socket WhatsApp conectado para tenant ${this.tenantId}`);
+    this.isConnected = true;
+    this.reconnectAttempts = 0;
+
+    if (this.authTimeoutTimer) {
+      clearTimeout(this.authTimeoutTimer);
+      this.authTimeoutTimer = null;
+    }
+
+    await updateSessionStatus(
+      this.supabase,
+      this.sessionId,
+      "CONNECTED",
+      null,
+      "vps-worker-01"
+    );
+
+    await recordSystemLog(this.supabase, {
+      tenant_id: this.tenantId,
+      level: "INFO",
+      event_type: "SESSION_READY",
+      message: "WhatsApp Baileys conectado e pronto para automação.",
+    });
+  }
+
+  /**
+   * Handler de desconexão com lógica de logout vs reconexão com backoff exponencial.
+   */
+  private async handleDisconnected(reason: string, isLoggedOut: boolean): Promise<void> {
+    this.lastEventAt = Date.now();
+    this.lastDisconnectedAt = Date.now();
+    console.warn(
+      `[Worker Baileys] WhatsApp desconectado (${reason}) para tenant ${this.tenantId} [LoggedOut: ${isLoggedOut}]`
+    );
+    this.isConnected = false;
+
+    const now = Date.now();
+    if (now - this.lastReconnectTime > this.reconnectCooldownWindowMs) {
+      this.reconnectAttempts = 0;
+    }
+    this.lastReconnectTime = now;
+    this.lastReconnectAt = now;
+
+    if (isLoggedOut) {
+      console.warn(
+        `[Worker Baileys] Logout explícito ou credenciais revogadas para tenant ${this.tenantId}. Expurgando pasta e reiniciando robô...`
+      );
+      this.qrCount = 0;
+      await this.stop();
+      await new Promise((res) => setTimeout(res, 1000));
+      purgeBaileysSessionDir(this.tenantId);
+
+      await updateSessionStatus(
+        this.supabase,
+        this.sessionId,
+        "DISCONNECTED_NEED_QR",
         null,
         "vps-worker-01",
         null,
-        this.phoneNumber || null
+        null
       );
 
       await recordSystemLog(this.supabase, {
         tenant_id: this.tenantId,
-        level: "INFO",
-        event_type: "SESSION_AUTHENTICATED",
-        message: "Autenticação Baileys em andamento...",
+        level: "WARN",
+        event_type: "SESSION_LOGOUT",
+        message: "Sessão desautorizada/desconectada pelo WhatsApp. Pasta de sessão expurgada.",
       });
-    });
 
-    // Evento de sessão pronta
-    provider.on("ready", async () => {
-      this.lastEventAt = Date.now();
-      this.lastReadyAt = Date.now();
-      console.log(`[Worker Baileys] Socket WhatsApp conectado para tenant ${this.tenantId}`);
-      this.isConnected = true;
-      this.reconnectAttempts = 0;
-
-      if (this.authTimeoutTimer) {
-        clearTimeout(this.authTimeoutTimer);
-        this.authTimeoutTimer = null;
+      try {
+        this.provider = this.createProvider();
+        await this.start();
+      } catch (restartErr: any) {
+        console.error(
+          "[Worker Baileys] Erro ao reiniciar worker após logout:",
+          restartErr?.message
+        );
       }
+      return;
+    }
 
-      await updateSessionStatus(
-        this.supabase,
-        this.sessionId,
-        "CONNECTED",
-        null,
-        "vps-worker-01"
+    await updateSessionStatus(
+      this.supabase,
+      this.sessionId,
+      "DISCONNECTED",
+      null,
+      "vps-worker-01"
+    );
+
+    this.reconnectAttempts++;
+    this.reconnectAttemptsTotal++;
+    const backoffDelayMs = Math.min(
+      60000,
+      Math.pow(2, this.reconnectAttempts) * 2000 +
+        Math.floor(Math.random() * 1000)
+    );
+    console.log(
+      `[Worker Baileys Reconnect] Agendando reconexão automática #${this.reconnectAttempts} em ${(
+        backoffDelayMs / 1000
+      ).toFixed(1)}s...`
+    );
+
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(async () => {
+      try {
+        console.log(
+          `[Worker Baileys Reconnect] Executando reconexão para tenant ${this.tenantId}...`
+        );
+        await this.provider.reconnect();
+      } catch (err: any) {
+        console.error(
+          "[Worker Baileys Reconnect] Erro ao reconectar sessão salva:",
+          err.message
+        );
+      }
+    }, backoffDelayMs);
+  }
+
+  // ── Message Processing Pipeline ───────────────────────────────────────
+
+  /**
+   * Handler de mensagem recebida. Detecta convites Velox e dispara o pipeline de aceite.
+   */
+  private async handleIncomingMessage(msg: IncomingMessagePayload): Promise<void> {
+    if (!msg || !msg.body) return;
+
+    this.lastEventAt = Date.now();
+    this.lastMessageReceivedAt = Date.now();
+
+    const match = msg.body.match(this.inviteRegex);
+    if (!match) return;
+
+    const targetUrl = match[0];
+    console.log(
+      `[Worker Baileys] 🎉 Convite Velox capturado no WhatsApp! [Tenant: ${this.tenantId}] Link: ${targetUrl}`
+    );
+
+    if (!this.isActive) {
+      console.log(
+        `[Worker Baileys] Automação pausada pelo prestador. Ignorando convite: ${targetUrl}`
       );
-
       await recordSystemLog(this.supabase, {
         tenant_id: this.tenantId,
-        level: "INFO",
-        event_type: "SESSION_READY",
-        message: "WhatsApp Baileys conectado e pronto para automação.",
+        level: "WARN",
+        event_type: "AUTOMATION_PAUSED",
+        message: "Convite recebido mas ignorado pois a automação está pausada pelo prestador.",
+        details: { url: targetUrl },
       });
-    });
+      return;
+    }
 
-    // Evento de desconexão
-    provider.on("disconnected", async (reason: string, isLoggedOut: boolean) => {
-      this.lastEventAt = Date.now();
-      this.lastDisconnectedAt = Date.now();
+    try {
+      const chaveConvite = extractChaveConvite(targetUrl);
+      const allocation = await this.resolveFleetAllocation(targetUrl, chaveConvite);
+
+      // null indica que a capacidade da frota foi atingida — abortar silenciosamente
+      if (!allocation) return;
+
+      const { isDuplicate, availableVehicle } = allocation;
+
+      setImmediate(async () => {
+        await this.executeInviteAcceptance(targetUrl, isDuplicate, availableVehicle);
+      });
+    } catch (err: any) {
+      console.error(
+        "[Worker Baileys] Erro ao verificar capacidade da frota:",
+        err.message
+      );
+    }
+  }
+
+  /**
+   * Verifica deduplicação por ChaveConvite no banco e disponibilidade da frota.
+   * Retorna null se a capacidade foi atingida (convite deve ser ignorado).
+   */
+  private async resolveFleetAllocation(
+    targetUrl: string,
+    chaveConvite: string | null
+  ): Promise<{ isDuplicate: boolean; availableVehicle: any } | null> {
+    let isDuplicate = false;
+
+    if (chaveConvite) {
+      const { data: existingCalls } = await this.supabase
+        .from("captured_calls")
+        .select("id")
+        .eq("tenant_id", this.tenantId)
+        .ilike("url", `%${chaveConvite}%`)
+        .limit(1);
+
+      if (existingCalls && existingCalls.length > 0) {
+        isDuplicate = true;
+      }
+    } else {
+      const { data: existingCalls } = await this.supabase
+        .from("captured_calls")
+        .select("id")
+        .eq("tenant_id", this.tenantId)
+        .eq("url", targetUrl)
+        .limit(1);
+
+      if (existingCalls && existingCalls.length > 0) {
+        isDuplicate = true;
+      }
+    }
+
+    if (isDuplicate) {
       console.warn(
-        `[Worker Baileys] WhatsApp desconectado (${reason}) para tenant ${this.tenantId} [LoggedOut: ${isLoggedOut}]`
+        `[Worker Baileys] ⚠️ Chamado duplicado identificado (${
+          chaveConvite ? `ChaveConvite: ${chaveConvite}` : targetUrl
+        }). Nenhum veículo adicional será alocado, procedendo com a requisição de aceite.`
       );
-      this.isConnected = false;
 
-      const now = Date.now();
-      if (now - this.lastReconnectTime > this.reconnectCooldownWindowMs) {
-        this.reconnectAttempts = 0;
-      }
-      this.lastReconnectTime = now;
-      this.lastReconnectAt = now;
+      await recordSystemLog(this.supabase, {
+        tenant_id: this.tenantId,
+        level: "WARN",
+        event_type: "DUPLICATE_CALL_DETECTED",
+        message: `Chamado duplicado identificado (${
+          chaveConvite ? `ChaveConvite: ${chaveConvite}` : targetUrl
+        }). Nenhum veículo adicional alocado.`,
+        details: { url: targetUrl, chaveConvite },
+      });
 
-      if (isLoggedOut) {
-        console.warn(
-          `[Worker Baileys] Logout explícito ou credenciais revogadas para tenant ${this.tenantId}. Expurgando pasta e reiniciando robô...`
-        );
-        this.qrCount = 0;
-        await this.stop();
-        await new Promise((res) => setTimeout(res, 1000));
-        purgeBaileysSessionDir(this.tenantId);
+      return { isDuplicate: true, availableVehicle: null };
+    }
 
-        await updateSessionStatus(
-          this.supabase,
-          this.sessionId,
-          "DISCONNECTED_NEED_QR",
-          null,
-          "vps-worker-01",
-          null,
-          null
-        );
+    // Não é duplicado — verificar capacidade da frota
+    const { data: vehicles } = await this.supabase
+      .from("vehicles")
+      .select("*")
+      .eq("tenant_id", this.tenantId)
+      .eq("is_active", true);
 
+    const fleetCapacity = vehicles && vehicles.length > 0 ? vehicles.length : 1;
+
+    const { data: calls } = await this.supabase
+      .from("captured_calls")
+      .select("*")
+      .eq("tenant_id", this.tenantId)
+      .eq("status", "SUCCESS")
+      .is("completed_at", null);
+
+    const now = Date.now();
+    const activeCalls = (calls || []).filter((call) => {
+      const createdAtMs = new Date(call.created_at).getTime();
+      const durationMin = call.previa_minutos || 50;
+      const expiresAtMs = createdAtMs + durationMin * 60 * 1000;
+      return now < expiresAtMs;
+    });
+
+    if (activeCalls.length >= fleetCapacity) {
+      console.log(
+        `[Worker Baileys] Capacidade máxima da frota atingida (${activeCalls.length}/${fleetCapacity} atendimentos ativos). Ignorando convite.`
+      );
+
+      await recordSystemLog(this.supabase, {
+        tenant_id: this.tenantId,
+        level: "WARN",
+        event_type: "FLEET_CAPACITY_REACHED",
+        message: `Capacidade da frota atingida (${activeCalls.length}/${fleetCapacity} veículos em atendimento). Convite não aceito automaticamente.`,
+        details: {
+          url: targetUrl,
+          activeCallsCount: activeCalls.length,
+          fleetCapacity,
+        },
+      });
+      return null;
+    }
+
+    const assignedVehicleIds = new Set(
+      activeCalls.map((c) => c.vehicle_id).filter(Boolean)
+    );
+    const availableVehicle =
+      (vehicles || []).find((v) => !assignedVehicleIds.has(v.id)) || null;
+
+    return { isDuplicate: false, availableVehicle };
+  }
+
+  /**
+   * Executa o aceite do convite via scraper e registra o resultado no banco.
+   */
+  private async executeInviteAcceptance(
+    targetUrl: string,
+    isDuplicate: boolean,
+    availableVehicle: any
+  ): Promise<void> {
+    try {
+      const result = await this.scraper.processarConvite(targetUrl);
+      const previaMinutos = calcularPrevia(result.distanciaKm);
+
+      const responsePayloadToRecord = {
+        ...(result.responsePayload || {}),
+        debugInfo: result.debugInfo || null,
+        attemptsMade: result.attemptsMade,
+        payloadSent: result.payload || null,
+        isDuplicate: isDuplicate || undefined,
+      };
+
+      await recordCapturedCall(this.supabase, {
+        tenant_id: this.tenantId,
+        url: result.url,
+        distancia_km: result.distanciaKm,
+        previa_valor: result.previaValor,
+        previa_minutos: previaMinutos,
+        vehicle_id: availableVehicle?.id || null,
+        duration_ms: result.durationMs,
+        status: result.success ? "SUCCESS" : "FAILED",
+        response_payload: responsePayloadToRecord,
+        error_message: result.errorMessage || null,
+      });
+
+      await recordSystemLog(this.supabase, {
+        tenant_id: this.tenantId,
+        level: result.success ? "INFO" : "ERROR",
+        event_type: result.success ? "HTTP_POST_SUCCESS" : "HTTP_POST_ERROR",
+        message: result.success
+          ? `Convite aceito com sucesso em ${result.durationMs}ms${
+              availableVehicle
+                ? ` | Veículo: ${availableVehicle.title}`
+                : isDuplicate
+                ? " | Duplicado (sem novo veículo)"
+                : ""
+            }.`
+          : `Falha no aceite do convite: ${result.errorMessage}`,
+        details: {
+          url: targetUrl,
+          durationMs: result.durationMs,
+          vehicleId: availableVehicle?.id || null,
+          isDuplicate,
+          statusCode: result.statusCode,
+          debugInfo: result.debugInfo,
+        },
+      });
+    } catch (asyncErr: any) {
+      console.error(
+        `[Worker Baileys] Erro crítico no processamento assíncrono do convite para tenant ${this.tenantId}:`,
+        asyncErr?.message
+      );
+      try {
         await recordSystemLog(this.supabase, {
           tenant_id: this.tenantId,
-          level: "WARN",
-          event_type: "SESSION_LOGOUT",
-          message: "Sessão desautorizada/desconectada pelo WhatsApp. Pasta de sessão expurgada.",
+          level: "ERROR",
+          event_type: "ASYNC_INVITE_PROCESSING_ERROR",
+          message: `Exceção capturada em setImmediate: ${asyncErr?.message}`,
+          details: { url: targetUrl, error: asyncErr?.stack },
         });
-
-        try {
-          this.provider = this.createProvider();
-          await this.start();
-        } catch (restartErr: any) {
-          console.error(
-            "[Worker Baileys] Erro ao reiniciar worker após logout:",
-            restartErr?.message
-          );
-        }
-        return;
-      }
-
-      await updateSessionStatus(
-        this.supabase,
-        this.sessionId,
-        "DISCONNECTED",
-        null,
-        "vps-worker-01"
-      );
-
-      this.reconnectAttempts++;
-      this.reconnectAttemptsTotal++;
-      const backoffDelayMs = Math.min(
-        60000,
-        Math.pow(2, this.reconnectAttempts) * 2000 +
-          Math.floor(Math.random() * 1000)
-      );
-      console.log(
-        `[Worker Baileys Reconnect] Agendando reconexão automática #${this.reconnectAttempts} em ${(
-          backoffDelayMs / 1000
-        ).toFixed(1)}s...`
-      );
-
-      if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = setTimeout(async () => {
-        try {
-          console.log(
-            `[Worker Baileys Reconnect] Executando reconexão para tenant ${this.tenantId}...`
-          );
-          await this.provider.reconnect();
-        } catch (err: any) {
-          console.error(
-            "[Worker Baileys Reconnect] Erro ao reconectar sessão salva:",
-            err.message
-          );
-        }
-      }, backoffDelayMs);
-    });
-
-    // Processamento de mensagem recebida
-    provider.on("message", async (msg: IncomingMessagePayload) => {
-      if (!msg || !msg.body) return;
-
-      this.lastEventAt = Date.now();
-      this.lastMessageReceivedAt = Date.now();
-
-      const sender = msg.from || "";
-
-      // Deduplicação com janela deslizante LRU + TTL de 30 minutos
-      const msgId = msg.id || `${sender}_${msg.timestamp}`;
-      const nowMs = Date.now();
-      if (this.processedMsgIds.has(msgId)) return;
-
-      this.processedMsgIds.set(msgId, nowMs);
-      if (this.processedMsgIds.size > 1000) {
-        // Limpeza automática de IDs antigos (TTL > 30min)
-        for (const [key, time] of this.processedMsgIds.entries()) {
-          if (nowMs - time > 30 * 60 * 1000) {
-            this.processedMsgIds.delete(key);
-          }
-        }
-      }
-
-      const match = msg.body.match(this.inviteRegex);
-      if (match) {
-        const targetUrl = match[0];
-        console.log(
-          `[Worker Baileys] 🎉 Convite Velox capturado no WhatsApp! [Tenant: ${this.tenantId}] Link: ${targetUrl}`
-        );
-
-        if (!this.isActive) {
-          console.log(
-            `[Worker Baileys] Automação pausada pelo prestador. Ignorando convite: ${targetUrl}`
-          );
-          await recordSystemLog(this.supabase, {
-            tenant_id: this.tenantId,
-            level: "WARN",
-            event_type: "AUTOMATION_PAUSED",
-            message: "Convite recebido mas ignorado pois a automação está pausada pelo prestador.",
-            details: { url: targetUrl },
-          });
-          return;
-        }
-
-        try {
-          const chaveConvite = extractChaveConvite(targetUrl);
-          let isDuplicate = false;
-
-          if (chaveConvite) {
-            const { data: existingCalls } = await this.supabase
-              .from("captured_calls")
-              .select("id")
-              .eq("tenant_id", this.tenantId)
-              .ilike("url", `%${chaveConvite}%`)
-              .limit(1);
-
-            if (existingCalls && existingCalls.length > 0) {
-              isDuplicate = true;
-            }
-          } else {
-            const { data: existingCalls } = await this.supabase
-              .from("captured_calls")
-              .select("id")
-              .eq("tenant_id", this.tenantId)
-              .eq("url", targetUrl)
-              .limit(1);
-
-            if (existingCalls && existingCalls.length > 0) {
-              isDuplicate = true;
-            }
-          }
-
-          let availableVehicle: any = null;
-
-          if (isDuplicate) {
-            console.warn(
-              `[Worker Baileys] ⚠️ Chamado duplicado identificado (${
-                chaveConvite ? `ChaveConvite: ${chaveConvite}` : targetUrl
-              }). Nenhum veículo adicional será alocado, procedendo com a requisição de aceite.`
-            );
-
-            await recordSystemLog(this.supabase, {
-              tenant_id: this.tenantId,
-              level: "WARN",
-              event_type: "DUPLICATE_CALL_DETECTED",
-              message: `Chamado duplicado identificado (${
-                chaveConvite ? `ChaveConvite: ${chaveConvite}` : targetUrl
-              }). Nenhum veículo adicional alocado.`,
-              details: { url: targetUrl, chaveConvite },
-            });
-          } else {
-            const { data: vehicles } = await this.supabase
-              .from("vehicles")
-              .select("*")
-              .eq("tenant_id", this.tenantId)
-              .eq("is_active", true);
-
-            const fleetCapacity = vehicles && vehicles.length > 0 ? vehicles.length : 1;
-
-            const { data: calls } = await this.supabase
-              .from("captured_calls")
-              .select("*")
-              .eq("tenant_id", this.tenantId)
-              .eq("status", "SUCCESS")
-              .is("completed_at", null);
-
-            const now = Date.now();
-            const activeCalls = (calls || []).filter((call) => {
-              const createdAtMs = new Date(call.created_at).getTime();
-              const durationMin = call.previa_minutos || 50;
-              const expiresAtMs = createdAtMs + durationMin * 60 * 1000;
-              return now < expiresAtMs;
-            });
-
-            if (activeCalls.length >= fleetCapacity) {
-              console.log(
-                `[Worker Baileys] Capacidade máxima da frota atingida (${activeCalls.length}/${fleetCapacity} atendimentos ativos). Ignorando convite.`
-              );
-
-              await recordSystemLog(this.supabase, {
-                tenant_id: this.tenantId,
-                level: "WARN",
-                event_type: "FLEET_CAPACITY_REACHED",
-                message: `Capacidade da frota atingida (${activeCalls.length}/${fleetCapacity} veículos em atendimento). Convite não aceito automaticamente.`,
-                details: {
-                  url: targetUrl,
-                  activeCallsCount: activeCalls.length,
-                  fleetCapacity,
-                },
-              });
-              return;
-            }
-
-            const assignedVehicleIds = new Set(
-              activeCalls.map((c) => c.vehicle_id).filter(Boolean)
-            );
-            availableVehicle =
-              (vehicles || []).find((v) => !assignedVehicleIds.has(v.id)) || null;
-          }
-
-          setImmediate(async () => {
-            try {
-              const result = await this.scraper.processarConvite(targetUrl);
-              const previaMinutos = calcularPrevia(result.distanciaKm);
-
-              const responsePayloadToRecord = {
-                ...(result.responsePayload || {}),
-                debugInfo: result.debugInfo || null,
-                attemptsMade: result.attemptsMade,
-                payloadSent: result.payload || null,
-                isDuplicate: isDuplicate || undefined,
-              };
-
-              await recordCapturedCall(this.supabase, {
-                tenant_id: this.tenantId,
-                url: result.url,
-                distancia_km: result.distanciaKm,
-                previa_valor: result.previaValor,
-                previa_minutos: previaMinutos,
-                vehicle_id: availableVehicle?.id || null,
-                duration_ms: result.durationMs,
-                status: result.success ? "SUCCESS" : "FAILED",
-                response_payload: responsePayloadToRecord,
-                error_message: result.errorMessage || null,
-              });
-
-              await recordSystemLog(this.supabase, {
-                tenant_id: this.tenantId,
-                level: result.success ? "INFO" : "ERROR",
-                event_type: result.success ? "HTTP_POST_SUCCESS" : "HTTP_POST_ERROR",
-                message: result.success
-                  ? `Convite aceito com sucesso em ${result.durationMs}ms${
-                      availableVehicle
-                        ? ` | Veículo: ${availableVehicle.title}`
-                        : isDuplicate
-                        ? " | Duplicado (sem novo veículo)"
-                        : ""
-                    }.`
-                  : `Falha no aceite do convite: ${result.errorMessage}`,
-                details: {
-                  url: targetUrl,
-                  durationMs: result.durationMs,
-                  vehicleId: availableVehicle?.id || null,
-                  isDuplicate,
-                  statusCode: result.statusCode,
-                  debugInfo: result.debugInfo,
-                },
-              });
-            } catch (asyncErr: any) {
-              console.error(
-                `[Worker Baileys] Erro crítico no processamento assíncrono do convite para tenant ${this.tenantId}:`,
-                asyncErr?.message
-              );
-              try {
-                await recordSystemLog(this.supabase, {
-                  tenant_id: this.tenantId,
-                  level: "ERROR",
-                  event_type: "ASYNC_INVITE_PROCESSING_ERROR",
-                  message: `Exceção capturada em setImmediate: ${asyncErr?.message}`,
-                  details: { url: targetUrl, error: asyncErr?.stack },
-                });
-              } catch (_) {}
-            }
-          });
-        } catch (err: any) {
-          console.error(
-            "[Worker Baileys] Erro ao verificar capacidade da frota:",
-            err.message
-          );
-        }
-      }
-    });
+      } catch (_) {}
+    }
   }
+
+  // ── Lifecycle Control ─────────────────────────────────────────────────
 
   /**
    * Inicializa o worker do WhatsApp Baileys.
@@ -693,8 +703,10 @@ export class WhatsAppWorker {
     this.state = "STOPPED";
   }
 
+  // ── Observability ─────────────────────────────────────────────────────
+
   /**
-   * Métricas de Observabilidade do Worker
+   * Métricas de Observabilidade do Worker.
    */
   public getMetrics(): WorkerMetrics {
     const now = Date.now();
@@ -709,17 +721,10 @@ export class WhatsAppWorker {
       sessionUptimeSeconds: this.sessionStartTimestamp
         ? Math.floor((now - this.sessionStartTimestamp) / 1000)
         : 0,
-      chromiumUptimeSeconds: 0,
       lastMessageReceivedAt: this.lastMessageReceivedAt
         ? new Date(this.lastMessageReceivedAt).toISOString()
         : null,
       lastEventAt: this.lastEventAt ? new Date(this.lastEventAt).toISOString() : null,
-      lastLoadingScreenAt: this.lastLoadingScreenAt
-        ? new Date(this.lastLoadingScreenAt).toISOString()
-        : null,
-      lastStateChangeAt: this.lastStateChangeAt
-        ? new Date(this.lastStateChangeAt).toISOString()
-        : null,
       lastAuthenticatedAt: this.lastAuthenticatedAt
         ? new Date(this.lastAuthenticatedAt).toISOString()
         : null,
@@ -727,24 +732,11 @@ export class WhatsAppWorker {
       lastDisconnectedAt: this.lastDisconnectedAt
         ? new Date(this.lastDisconnectedAt).toISOString()
         : null,
-      lastAuthFailureAt: this.lastAuthFailureAt
-        ? new Date(this.lastAuthFailureAt).toISOString()
-        : null,
       lastReconnectAt: this.lastReconnectAt
         ? new Date(this.lastReconnectAt).toISOString()
         : null,
-      lastRestartAt: this.lastRestartAt
-        ? new Date(this.lastRestartAt).toISOString()
-        : null,
-      lastPreventiveReloadAt: this.lastPreventiveReloadAt
-        ? new Date(this.lastPreventiveReloadAt).toISOString()
-        : null,
       reconnectAttempts: this.reconnectAttempts,
       reconnectAttemptsTotal: this.reconnectAttemptsTotal,
-      zombieDetectCount: this.zombieDetectCount,
-      autoRestartCount: this.autoRestartCount,
-      preventiveReloadCount: this.preventiveReloadCount,
-      chromiumCrashCount: this.chromiumCrashCount,
       memoryUsageMb: {
         rss: Math.round(mem.rss / (1024 * 1024)),
         heapTotal: Math.round(mem.heapTotal / (1024 * 1024)),
