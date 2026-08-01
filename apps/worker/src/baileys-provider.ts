@@ -67,6 +67,18 @@ export class BaileysProvider implements WhatsAppProvider {
   private sessionDir: string;
   private msgRetryCounterCache = createInMemoryCacheStore();
 
+  private disconnectSocket(): void {
+    if (this.socket) {
+      try {
+        this.socket.ev.removeAllListeners('creds.update');
+        this.socket.ev.removeAllListeners('connection.update');
+        this.socket.ev.removeAllListeners('messages.upsert');
+        this.socket.end(undefined);
+      } catch (_) {}
+      this.socket = null;
+    }
+  }
+
   constructor(private tenantId: string) {
     const authDataPath = getBaileysAuthDataPath();
     this.sessionDir = path.join(authDataPath, `session-tenant_${tenantId}`);
@@ -80,6 +92,7 @@ export class BaileysProvider implements WhatsAppProvider {
       return;
     }
 
+    this.disconnectSocket();
     this.isExplicitStop = false;
     this.connectionState = "CONNECTING";
 
@@ -102,7 +115,7 @@ export class BaileysProvider implements WhatsAppProvider {
       syncFullHistory: false,
       shouldSyncHistoryMessage: () => false,
       markOnlineOnConnect: true,
-      retryRequestDelayMs: 250,
+      retryRequestDelayMs: 500,
       msgRetryCounterCache: this.msgRetryCounterCache as any,
       getMessage: async () => {
         return undefined;
@@ -125,28 +138,43 @@ export class BaileysProvider implements WhatsAppProvider {
 
       if (connection === "connecting") {
         this.connectionState = "CONNECTING";
-        this.emitter.emit("authenticated");
       } else if (connection === "open") {
         console.log(
           `[BaileysProvider] Socket Baileys CONECTADO com sucesso para tenant ${this.tenantId}`
         );
         this.connectionState = "CONNECTED";
+        this.emitter.emit("authenticated");
         this.emitter.emit("ready");
       } else if (connection === "close") {
         this.connectionState = "DISCONNECTED";
-        const statusCode =
-          (lastDisconnect?.error as any)?.output?.statusCode ||
-          (lastDisconnect?.error as any)?.statusCode;
+        const boomError = lastDisconnect?.error as any;
+        const statusCode: number | undefined =
+          boomError?.output?.statusCode ??
+          boomError?.statusCode ??
+          undefined;
         const reason = lastDisconnect?.error?.message || `Disconnect statusCode: ${statusCode}`;
         const isLoggedOut =
           statusCode === DisconnectReason.loggedOut ||
           statusCode === 401;
 
+        // Log estruturado com statusCode numérico para facilitar debug
+        const disconnectReasonMap: Record<number, string> = {
+          401: 'loggedOut',
+          408: 'timedOut',
+          411: 'multideviceMismatch',
+          428: 'connectionClosed',
+          440: 'connectionReplaced',
+          500: 'badSession',
+          501: 'connectionLost',
+          515: 'restartRequired',
+        };
+        const reasonLabel = statusCode ? (disconnectReasonMap[statusCode] || 'unknown') : 'undefined';
+
         console.warn(
-          `[BaileysProvider] Conexão fechada para tenant ${this.tenantId} (Reason: ${reason}, LoggedOut: ${isLoggedOut})`
+          `[BaileysProvider] Conexão fechada para tenant ${this.tenantId} (statusCode: ${statusCode ?? 'undefined'} [${reasonLabel}], LoggedOut: ${isLoggedOut})`
         );
 
-        this.emitter.emit("disconnected", reason, isLoggedOut);
+        this.emitter.emit("disconnected", reason, isLoggedOut, statusCode);
       }
     });
 
@@ -201,17 +229,14 @@ export class BaileysProvider implements WhatsAppProvider {
   public async stop(): Promise<void> {
     this.isExplicitStop = true;
     this.connectionState = "STOPPED";
-    if (this.socket) {
-      try {
-        this.socket.end(undefined);
-      } catch (_) {}
-      this.socket = null;
-    }
+    this.disconnectSocket();
   }
 
   public async reconnect(): Promise<void> {
-    await this.stop();
-    await new Promise((res) => setTimeout(res, 1000));
+    this.disconnectSocket();
+    this.isExplicitStop = false;
+    this.connectionState = "DISCONNECTED";
+    await new Promise((res) => setTimeout(res, 2000));
     await this.start();
   }
 

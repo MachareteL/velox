@@ -211,7 +211,7 @@ export class WhatsAppWorker {
     provider.on("qr", (qr) => this.handleQrGenerated(qr));
     provider.on("authenticated", () => this.handleAuthenticated());
     provider.on("ready", () => this.handleReady());
-    provider.on("disconnected", (reason, isLoggedOut) => this.handleDisconnected(reason, isLoggedOut));
+    provider.on("disconnected", (reason, isLoggedOut, statusCode) => this.handleDisconnected(reason, isLoggedOut, statusCode));
     provider.on("message", (msg) => this.handleIncomingMessage(msg));
   }
 
@@ -332,27 +332,23 @@ export class WhatsAppWorker {
 
   /**
    * Handler de desconexão com lógica de logout vs reconexão com backoff exponencial.
+   * Respeita maxReconnectAttempts para evitar loop infinito.
    */
-  private async handleDisconnected(reason: string, isLoggedOut: boolean): Promise<void> {
+  private async handleDisconnected(reason: string, isLoggedOut: boolean, statusCode?: number): Promise<void> {
     this.lastEventAt = Date.now();
     this.lastDisconnectedAt = Date.now();
     console.warn(
-      `[Worker Baileys] WhatsApp desconectado (${reason}) para tenant ${this.tenantId} [LoggedOut: ${isLoggedOut}]`
+      `[Worker Baileys] WhatsApp desconectado (${reason}) para tenant ${this.tenantId} [LoggedOut: ${isLoggedOut}, statusCode: ${statusCode ?? 'undefined'}]`
     );
     this.isConnected = false;
 
-    const now = Date.now();
-    if (now - this.lastReconnectTime > this.reconnectCooldownWindowMs) {
-      this.reconnectAttempts = 0;
-    }
-    this.lastReconnectTime = now;
-    this.lastReconnectAt = now;
-
+    // ── Cenário 1: Logout explícito ou credenciais revogadas ──
     if (isLoggedOut) {
       console.warn(
         `[Worker Baileys] Logout explícito ou credenciais revogadas para tenant ${this.tenantId}. Expurgando pasta e reiniciando robô...`
       );
       this.qrCount = 0;
+      this.reconnectAttempts = 0;
       await this.stop();
       await new Promise((res) => setTimeout(res, 1000));
       purgeBaileysSessionDir(this.tenantId);
@@ -386,6 +382,27 @@ export class WhatsAppWorker {
       return;
     }
 
+    // ── Cenário 2: Restart Required (515) — reconexão imediata sem penalidade ──
+    if (statusCode === 515) {
+      console.log(
+        `[Worker Baileys] Servidor WhatsApp solicitou restart (515) para tenant ${this.tenantId}. Reconectando imediatamente...`
+      );
+      // NÃO incrementar reconnectAttempts — é uma solicitação legítima do servidor
+      if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = setTimeout(async () => {
+        try {
+          await this.provider.reconnect();
+        } catch (err: any) {
+          console.error(
+            "[Worker Baileys Reconnect] Erro ao reconectar após restart 515:",
+            err.message
+          );
+        }
+      }, 3000);
+      return;
+    }
+
+    // ── Cenário 3: Erro transitório — reconectar com backoff ──
     await updateSessionStatus(
       this.supabase,
       this.sessionId,
@@ -396,13 +413,38 @@ export class WhatsAppWorker {
 
     this.reconnectAttempts++;
     this.reconnectAttemptsTotal++;
+    this.lastReconnectAt = Date.now();
+
+    // Verificar limite de reconexões
+    if (this.reconnectAttempts > this.maxReconnectAttempts) {
+      console.error(
+        `[Worker Baileys] ⛔ Limite de reconexões atingido (${this.reconnectAttempts - 1}/${this.maxReconnectAttempts}) para tenant ${this.tenantId}. Parando tentativas automáticas.`
+      );
+
+      await recordSystemLog(this.supabase, {
+        tenant_id: this.tenantId,
+        level: "ERROR",
+        event_type: "RECONNECT_LIMIT_REACHED",
+        message: `Limite de ${this.maxReconnectAttempts} tentativas de reconexão atingido. Worker parado. Intervenção manual necessária.`,
+        details: {
+          reconnectAttempts: this.reconnectAttempts - 1,
+          lastReason: reason,
+          lastStatusCode: statusCode,
+        },
+      });
+      return;
+    }
+
+    // Backoff: statusCode undefined (Stream Errored) usa backoff mais longo
+    const isUndefinedStatus = statusCode === undefined;
+    const baseDelay = isUndefinedStatus ? 5000 : 2000;
     const backoffDelayMs = Math.min(
       60000,
-      Math.pow(2, this.reconnectAttempts) * 2000 +
+      Math.pow(2, this.reconnectAttempts) * baseDelay +
         Math.floor(Math.random() * 1000)
     );
     console.log(
-      `[Worker Baileys Reconnect] Agendando reconexão automática #${this.reconnectAttempts} em ${(
+      `[Worker Baileys Reconnect] Agendando reconexão automática #${this.reconnectAttempts}/${this.maxReconnectAttempts} em ${(
         backoffDelayMs / 1000
       ).toFixed(1)}s...`
     );

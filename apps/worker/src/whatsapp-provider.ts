@@ -10,7 +10,7 @@ export interface WhatsAppProviderEvents {
   pairingCode: (code: string) => void;
   authenticated: () => void;
   ready: () => void;
-  disconnected: (reason: string, isLoggedOut: boolean) => void;
+  disconnected: (reason: string, isLoggedOut: boolean, statusCode?: number) => void;
   message: (msg: IncomingMessagePayload) => void;
 }
 
