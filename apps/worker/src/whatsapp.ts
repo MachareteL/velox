@@ -48,15 +48,20 @@ export interface WorkerMetrics {
   };
 }
 
+export type WorkerState = "STARTING" | "CONNECTING" | "CONNECTED" | "DEGRADED" | "RECONNECTING" | "DISCONNECTED" | "NEED_QR" | "STOPPING" | "STOPPED";
+
 export class WhatsAppWorker {
   private provider!: WhatsAppProvider;
   private scraper: VeloxScraper;
   private inviteRegex: RegExp;
 
-  // Máquina de estados explícita para evitar race conditions
-  private state: "STOPPED" | "STARTING" | "RUNNING" | "RECOVERING" | "STOPPING" = "STOPPED";
+  // Máquina de estados explícita garante proteção contra race conditions
+  private state: WorkerState = "STOPPED";
   private isActive: boolean = true;
   private isConnected: boolean = false;
+  
+  // Watchdog
+  private watchdogTimer: NodeJS.Timeout | null = null;
 
   // Anti-Spam e Limites
   private qrCount: number = 0;
@@ -137,11 +142,66 @@ export class WhatsAppWorker {
   }
 
   public isRunning(): boolean {
-    return this.state === "RUNNING" || this.state === "STARTING";
+    return this.state !== "STOPPED" && this.state !== "NEED_QR" && this.state !== "DISCONNECTED";
   }
 
   public getWorkerState(): string {
     return this.state;
+  }
+
+  /**
+   * Único ponto de escrita no banco de dados para evitar atualizações desnecessárias.
+   * Transita a máquina de estados local e reflete a fonte da verdade no Supabase.
+   */
+  private async changeState(newState: WorkerState, qrDataUrl: string | null = null, pairingCode: string | null = null): Promise<void> {
+    if (this.state === newState && !qrDataUrl && !pairingCode) return;
+    
+    console.log(`[Worker FSM] Tenant ${this.tenantId} transitando de ${this.state} para ${newState}`);
+    this.state = newState;
+    
+    // Mapeamento para o status esperado no BD
+    let dbStatus: any = "DISCONNECTED";
+    if (newState === "STARTING" || newState === "CONNECTING" || newState === "RECONNECTING") dbStatus = "AUTHENTICATING";
+    else if (newState === "CONNECTED") dbStatus = "CONNECTED";
+    else if (newState === "NEED_QR") dbStatus = "DISCONNECTED_NEED_QR";
+    else if (newState === "STOPPED" || newState === "STOPPING" || newState === "DISCONNECTED" || newState === "DEGRADED") dbStatus = "DISCONNECTED";
+
+    try {
+      await updateSessionStatus(
+        this.supabase,
+        this.sessionId,
+        dbStatus,
+        qrDataUrl,
+        "vps-worker-01",
+        pairingCode,
+        this.phoneNumber || null
+      );
+    } catch (err: any) {
+      console.error(`[Worker FSM] Erro ao sincronizar DB para tenant ${this.tenantId}:`, err.message);
+    }
+  }
+
+  private startWatchdog(): void {
+    if (this.watchdogTimer) clearInterval(this.watchdogTimer);
+    
+    this.watchdogTimer = setInterval(async () => {
+      // Watchdog só atua se acreditarmos estar conectados
+      if (this.state === "CONNECTED") {
+        const isOpen = this.provider?.isSocketOpen();
+        if (!isOpen) {
+          console.warn(`[Worker Watchdog] 👻 Sessão fantasma detectada (Worker CONNECTED mas transporte TCP/WebSocket morto) para tenant ${this.tenantId}.`);
+          await this.changeState("DEGRADED");
+          await this.handleDisconnected("Watchdog Ghost Session Detected", false, undefined);
+        }
+      }
+    }, 30000);
+  }
+
+  private stopWatchdog(): void {
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
   }
 
   public async requestPairingCodeOnDemand(phoneNumber: string): Promise<string | null> {
@@ -164,15 +224,7 @@ export class WhatsAppWorker {
       const pairingCode = await this.provider.requestPairingCode(cleanPhone);
       console.log(`[Worker Baileys] Código de Pareamento gerado sob demanda: ${pairingCode}`);
 
-      await updateSessionStatus(
-        this.supabase,
-        this.sessionId,
-        "DISCONNECTED_NEED_QR",
-        null,
-        "vps-worker-01",
-        pairingCode,
-        cleanPhone
-      );
+      await this.changeState("NEED_QR", null, pairingCode);
 
       await recordSystemLog(this.supabase, {
         tenant_id: this.tenantId,
@@ -229,15 +281,7 @@ export class WhatsAppWorker {
         console.warn(
           `[Worker Anti-Spam] Limite de ${this.maxQrAttempts} renovações de QR Code atingido para tenant ${this.tenantId}. Encerrando socket inativo...`
         );
-        await updateSessionStatus(
-          this.supabase,
-          this.sessionId,
-          "DISCONNECTED",
-          null,
-          "vps-worker-01",
-          null,
-          null
-        );
+        await this.changeState("DISCONNECTED");
         await this.stop();
       }
       return;
@@ -249,16 +293,7 @@ export class WhatsAppWorker {
 
     try {
       const qrDataUrl = await QRCode.toDataURL(qrText);
-
-      await updateSessionStatus(
-        this.supabase,
-        this.sessionId,
-        "DISCONNECTED_NEED_QR",
-        qrDataUrl,
-        "vps-worker-01",
-        null,
-        null
-      );
+      await this.changeState("NEED_QR", qrDataUrl);
 
       await recordSystemLog(this.supabase, {
         tenant_id: this.tenantId,
@@ -281,15 +316,7 @@ export class WhatsAppWorker {
       `[Worker Baileys] ✨ Conexão autenticada/reconectando para tenant ${this.tenantId}...`
     );
 
-    await updateSessionStatus(
-      this.supabase,
-      this.sessionId,
-      "AUTHENTICATING",
-      null,
-      "vps-worker-01",
-      null,
-      this.phoneNumber || null
-    );
+    await this.changeState("CONNECTING");
 
     await recordSystemLog(this.supabase, {
       tenant_id: this.tenantId,
@@ -314,13 +341,7 @@ export class WhatsAppWorker {
       this.authTimeoutTimer = null;
     }
 
-    await updateSessionStatus(
-      this.supabase,
-      this.sessionId,
-      "CONNECTED",
-      null,
-      "vps-worker-01"
-    );
+    await this.changeState("CONNECTED");
 
     await recordSystemLog(this.supabase, {
       tenant_id: this.tenantId,
@@ -342,10 +363,10 @@ export class WhatsAppWorker {
     );
     this.isConnected = false;
 
-    // ── Cenário 1: Logout explícito ou credenciais revogadas ──
+    // ── Cenário 1: Logout explícito ou credenciais revogadas (badSession) ──
     if (isLoggedOut) {
       console.warn(
-        `[Worker Baileys] Logout explícito ou credenciais revogadas para tenant ${this.tenantId}. Expurgando pasta e reiniciando robô...`
+        `[Worker Baileys] Logout explícito ou credenciais corrompidas para tenant ${this.tenantId}. Expurgando pasta e solicitando QR...`
       );
       this.qrCount = 0;
       this.reconnectAttempts = 0;
@@ -353,21 +374,13 @@ export class WhatsAppWorker {
       await new Promise((res) => setTimeout(res, 1000));
       purgeBaileysSessionDir(this.tenantId);
 
-      await updateSessionStatus(
-        this.supabase,
-        this.sessionId,
-        "DISCONNECTED_NEED_QR",
-        null,
-        "vps-worker-01",
-        null,
-        null
-      );
+      await this.changeState("NEED_QR");
 
       await recordSystemLog(this.supabase, {
         tenant_id: this.tenantId,
         level: "WARN",
         event_type: "SESSION_LOGOUT",
-        message: "Sessão desautorizada/desconectada pelo WhatsApp. Pasta de sessão expurgada.",
+        message: "Sessão desautorizada/corrompida detectada. Pasta de sessão expurgada.",
       });
 
       try {
@@ -403,13 +416,7 @@ export class WhatsAppWorker {
     }
 
     // ── Cenário 3: Erro transitório — reconectar com backoff ──
-    await updateSessionStatus(
-      this.supabase,
-      this.sessionId,
-      "DISCONNECTED",
-      null,
-      "vps-worker-01"
-    );
+    await this.changeState("RECONNECTING");
 
     this.reconnectAttempts++;
     this.reconnectAttemptsTotal++;
@@ -420,6 +427,7 @@ export class WhatsAppWorker {
       console.error(
         `[Worker Baileys] ⛔ Limite de reconexões atingido (${this.reconnectAttempts - 1}/${this.maxReconnectAttempts}) para tenant ${this.tenantId}. Parando tentativas automáticas.`
       );
+      await this.changeState("DISCONNECTED");
 
       await recordSystemLog(this.supabase, {
         tenant_id: this.tenantId,
@@ -702,23 +710,26 @@ export class WhatsAppWorker {
    * Inicializa o worker do WhatsApp Baileys.
    */
   public async start(): Promise<void> {
-    if (this.state === "STARTING" || this.state === "RUNNING") {
-      console.log(
-        `[Worker Baileys] Worker já está rodando ou em processo de inicialização para tenant ${this.tenantId}. Ignorando chamada.`
-      );
-      return;
-    }
-    this.state = "STARTING";
-    this.sessionStartTimestamp = Date.now();
-    this.lastMessageReceivedAt = Date.now();
-    this.lastEventAt = Date.now();
-
     try {
+      if (this.isRunning() || this.state === "STOPPING") {
+        console.log(
+          `[Worker Baileys] Worker já está ativo (Estado: ${this.state}) para tenant ${this.tenantId}. Ignorando chamada de start().`
+        );
+        return;
+      }
+      
+      await this.changeState("STARTING");
+      this.sessionStartTimestamp = Date.now();
+      this.lastMessageReceivedAt = Date.now();
+      this.lastEventAt = Date.now();
+
       console.log(`[Worker Baileys] Inicializando socket Baileys para tenant ${this.tenantId}...`);
       await this.provider.start();
-      this.state = "RUNNING";
+      
+      this.startWatchdog();
     } catch (err: any) {
-      this.state = "STOPPED";
+      console.error(`[Worker Baileys] Falha ao iniciar worker: ${err.message}`);
+      await this.changeState("STOPPED");
       throw err;
     }
   }
@@ -727,22 +738,32 @@ export class WhatsAppWorker {
    * Encerra o worker e libera todos os recursos.
    */
   public async stop(): Promise<void> {
-    this.state = "STOPPING";
-    this.isConnected = false;
-
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    if (this.authTimeoutTimer) {
-      clearTimeout(this.authTimeoutTimer);
-      this.authTimeoutTimer = null;
+    if (this.state === "STOPPED" || this.state === "STOPPING") {
+      return;
     }
 
-    if (this.provider) {
-      await this.provider.stop();
+    try {
+      await this.changeState("STOPPING");
+      this.stopWatchdog();
+      this.isConnected = false;
+
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      if (this.authTimeoutTimer) {
+        clearTimeout(this.authTimeoutTimer);
+        this.authTimeoutTimer = null;
+      }
+
+      if (this.provider) {
+        await this.provider.stop();
+      }
+      await this.changeState("STOPPED");
+    } catch (err: any) {
+      console.error(`[Worker Baileys] Erro ao encerrar worker: ${err.message}`);
+      await this.changeState("STOPPED");
     }
-    this.state = "STOPPED";
   }
 
   // ── Observability ─────────────────────────────────────────────────────

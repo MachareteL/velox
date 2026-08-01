@@ -21,6 +21,7 @@ export interface WhatsAppProvider {
   isConnected(): boolean;
   requestPairingCode(phoneNumber: string): Promise<string>;
   getConnectionState(): string;
+  isSocketOpen(): boolean;
   on<K extends keyof WhatsAppProviderEvents>(
     event: K,
     listener: WhatsAppProviderEvents[K]

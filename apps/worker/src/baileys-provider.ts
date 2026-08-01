@@ -45,11 +45,17 @@ export function purgeBaileysSessionDir(tenantId: string): void {
   }
 }
 
-function createInMemoryCacheStore() {
+function createInMemoryCacheStore(maxSize: number = 1000) {
   const store = new Map<string, any>();
   return {
     get: <T>(key: string): T | undefined => store.get(key),
     set: <T>(key: string, value: T): void => {
+      if (store.size >= maxSize && !store.has(key)) {
+        // Estratégia de purga simplificada: limpa todo o cache quando atinge o limite
+        // Evita vazamento de memória sem a complexidade de um LRU completo
+        console.warn(`[CacheStore] Limite de ${maxSize} atingido. Limpando cache para evitar memory leak.`);
+        store.clear();
+      }
       store.set(key, value);
     },
     del: (key: string): void => {
@@ -152,21 +158,25 @@ export class BaileysProvider implements WhatsAppProvider {
           boomError?.output?.statusCode ??
           boomError?.statusCode ??
           undefined;
+        
         const reason = lastDisconnect?.error?.message || `Disconnect statusCode: ${statusCode}`;
+        
+        // Utilizando os motivos oficiais de desconexão da versão instalada
         const isLoggedOut =
           statusCode === DisconnectReason.loggedOut ||
-          statusCode === 401;
+          statusCode === DisconnectReason.badSession ||
+          statusCode === DisconnectReason.multideviceMismatch ||
+          statusCode === 403;   // Acesso negado/Banimento não possui enum padrão em algumas builds, 403 é clássico.
 
-        // Log estruturado com statusCode numérico para facilitar debug
         const disconnectReasonMap: Record<number, string> = {
-          401: 'loggedOut',
-          408: 'timedOut',
-          411: 'multideviceMismatch',
-          428: 'connectionClosed',
-          440: 'connectionReplaced',
-          500: 'badSession',
-          501: 'connectionLost',
-          515: 'restartRequired',
+          [DisconnectReason.loggedOut]: 'loggedOut',
+          [DisconnectReason.timedOut]: 'timedOut',
+          [DisconnectReason.multideviceMismatch]: 'multideviceMismatch',
+          [DisconnectReason.connectionClosed]: 'connectionClosed',
+          [DisconnectReason.connectionReplaced]: 'connectionReplaced',
+          [DisconnectReason.badSession]: 'badSession',
+          [DisconnectReason.restartRequired]: 'restartRequired',
+          403: 'forbidden'
         };
         const reasonLabel = statusCode ? (disconnectReasonMap[statusCode] || 'unknown') : 'undefined';
 
@@ -196,14 +206,24 @@ export class BaileysProvider implements WhatsAppProvider {
           continue;
         }
 
+        // Resolve mensagens encapsuladas (temporárias/viewOnce)
+        let innerMessage = msg.message;
+        if (innerMessage.ephemeralMessage) {
+          innerMessage = innerMessage.ephemeralMessage.message!;
+        } else if (innerMessage.viewOnceMessage) {
+          innerMessage = innerMessage.viewOnceMessage.message!;
+        } else if (innerMessage.viewOnceMessageV2) {
+          innerMessage = innerMessage.viewOnceMessageV2.message!;
+        }
+
         // Extração de corpo de texto da mensagem Baileys
         const body =
-          msg.message.conversation ||
-          msg.message.extendedTextMessage?.text ||
-          msg.message.imageMessage?.caption ||
-          msg.message.videoMessage?.caption ||
-          msg.message.buttonsResponseMessage?.selectedButtonId ||
-          msg.message.listResponseMessage?.singleSelectReply?.selectedRowId ||
+          innerMessage.conversation ||
+          innerMessage.extendedTextMessage?.text ||
+          innerMessage.imageMessage?.caption ||
+          innerMessage.videoMessage?.caption ||
+          innerMessage.buttonsResponseMessage?.selectedButtonId ||
+          innerMessage.listResponseMessage?.singleSelectReply?.selectedRowId ||
           "";
 
         if (!body) continue;
@@ -246,6 +266,17 @@ export class BaileysProvider implements WhatsAppProvider {
 
   public getConnectionState(): string {
     return this.connectionState;
+  }
+
+  /**
+   * Verifica a saúde da conexão em nível de transporte usando propriedades públicas do Baileys.
+   */
+  public isSocketOpen(): boolean {
+    if (!this.socket) return false;
+    // O Baileys expõe publícamente os getters isOpen/isClosed/isConnecting em sock.ws
+    // É seguro utilizar essa informação sem acessar o socket TCP bruto.
+    const ws = (this.socket as any).ws;
+    return ws && ws.isOpen === true;
   }
 
   public async requestPairingCode(phoneNumber: string): Promise<string> {
