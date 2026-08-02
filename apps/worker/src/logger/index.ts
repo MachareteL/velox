@@ -166,6 +166,9 @@ export class LoggerFactory {
       this.rootLogger = pino({
         level: process.env.LOG_LEVEL || "info",
         timestamp: pino.stdTimeFunctions.isoTime,
+        formatters: {
+          level: (label) => ({ level: label }),
+        },
         transport: isDev
           ? {
               target: "pino-pretty",

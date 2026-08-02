@@ -69,6 +69,16 @@ async function main() {
 
       try {
         if (worker && worker.isRunning()) {
+          rootLogger.worker(
+            "WORKER_ALREADY_RUNNING",
+            `Worker já está ativo para tenant ${tenantId} (Estado: ${worker.getWorkerState()}). Reutilizando instância...`,
+            { tenantId, operationId: opId, state: worker.getWorkerState() }
+          );
+          rootLogger.worker(
+            "WORKER_REUSED",
+            `Reutilizando instância operacional existente para tenant ${tenantId}`,
+            { tenantId, operationId: opId }
+          );
           worker.setIsActive(isActive);
           if (phoneNumber && phoneNumber !== worker.getPhoneNumber()) {
             await worker.requestPairingCodeOnDemand(phoneNumber, opId);
@@ -86,11 +96,12 @@ async function main() {
         }
 
         const tenantLogger = LoggerFactory.forTenant(tenantId, sessionId, opId);
-        rootLogger.info(
-          `[Orchestrator] Iniciando worker isolado para tenant ${tenantId} [Automação: ${
+        rootLogger.worker(
+          "WORKER_CREATED",
+          `Criando nova instância de WhatsAppWorker para tenant ${tenantId} [Automação: ${
             isActive ? "LIGADA" : "PAUSADA"
           }]${phoneNumber ? ` [Telefone: ${phoneNumber}]` : ""}...`,
-          { operationId: opId }
+          { tenantId, operationId: opId }
         );
 
         worker = new WhatsAppWorker(
@@ -239,19 +250,28 @@ async function main() {
         async (payload: any) => {
           const eventOpId = crypto.randomUUID();
 
+          const session = payload.new || payload.old;
+          const tenantId = session?.tenant_id;
+
+          rootLogger.worker(
+            "REALTIME_EVENT_RECEIVED",
+            `Evento Realtime recebido da tabela whatsapp_sessions [event: ${payload.eventType}, tenant: ${tenantId || 'desconhecido'}]`,
+            { eventType: payload.eventType, tenantId, operationId: eventOpId }
+          );
+
           if (payload.eventType === "DELETE") {
             const oldSession = payload.old;
             if (oldSession && oldSession.tenant_id) {
-              rootLogger.info(
-                `[Orchestrator] Sessão deletada do banco [tenant: ${oldSession.tenant_id}]. Encerrando worker...`,
-                { operationId: eventOpId }
+              rootLogger.worker(
+                "REALTIME_EVENT_PROCESSED",
+                `Sessão deletada do banco [tenant: ${oldSession.tenant_id}]. Encerrando worker...`,
+                { operationId: eventOpId, action: "STOP_WORKER" }
               );
               await stopWorkerForTenant(oldSession.tenant_id, eventOpId);
             }
             return;
           }
 
-          const session = payload.new;
           if (!session || !session.tenant_id) return;
 
           const existingWorker = activeWorkers.get(session.tenant_id);
@@ -267,23 +287,20 @@ async function main() {
               (session.status === "DISCONNECTED_NEED_QR" && currentState === "NEED_QR");
 
             if (isMatch) {
-              rootLogger.info(
-                `[Orchestrator] Evento do Realtime ignorado (Feedback Loop prevenido) [tenant: ${session.tenant_id}] (Status DB: ${session.status}, Estado Worker: ${currentState})`,
-                { operationId: eventOpId }
+              rootLogger.worker(
+                "REALTIME_EVENT_IGNORED",
+                `Evento do Realtime ignorado (Feedback Loop prevenido) [tenant: ${session.tenant_id}] (Status DB: ${session.status}, Estado Worker: ${currentState})`,
+                { operationId: eventOpId, tenantId: session.tenant_id, status: session.status, currentState }
               );
               return;
             }
           }
 
-          rootLogger.info(
-            `[Orchestrator] Evento de sessão [tenant: ${session.tenant_id}]: status = ${session.status}, is_active = ${session.is_active}`,
-            { operationId: eventOpId }
-          );
-
           if (session.is_active === false) {
-            rootLogger.info(
-              `[Orchestrator] Automação desativada pelo prestador [tenant: ${session.tenant_id}]. Pausando escuta...`,
-              { operationId: eventOpId }
+            rootLogger.worker(
+              "REALTIME_EVENT_IGNORED",
+              `Automação desativada pelo prestador [tenant: ${session.tenant_id}]. Pausando escuta...`,
+              { operationId: eventOpId, tenantId: session.tenant_id, reason: "AUTOMATION_PAUSED" }
             );
             if (existingWorker) {
               existingWorker.setIsActive(false);
@@ -307,22 +324,30 @@ async function main() {
             if (isFreshResetRequested) {
               if (existingWorker) {
                 if (!existingWorker.isRunning() || !existingWorker.getMetrics().isConnected) {
-                  rootLogger.info(
-                    `[Orchestrator] Redefinição de sessão solicitada para tenant ${session.tenant_id}. Reiniciando worker do zero...`,
-                    { operationId: eventOpId }
+                  rootLogger.worker(
+                    "REALTIME_EVENT_PROCESSED",
+                    `Redefinição de sessão solicitada para tenant ${session.tenant_id}. Reiniciando worker do zero...`,
+                    { operationId: eventOpId, action: "FRESH_RESET" }
                   );
                   await existingWorker.restartForFreshAuth(session.phone_number, eventOpId);
                   return;
                 } else {
-                  rootLogger.info(
-                    `[Orchestrator] Worker do tenant ${session.tenant_id} já está CONECTADO. Ignorando evento tardio de redefinição.`,
-                    { operationId: eventOpId }
+                  rootLogger.worker(
+                    "REALTIME_EVENT_IGNORED",
+                    `Worker do tenant ${session.tenant_id} já está CONECTADO. Ignorando evento tardio de redefinição.`,
+                    { operationId: eventOpId, tenantId: session.tenant_id }
                   );
                 }
               } else {
                 purgeBaileysSessionDir(session.tenant_id);
               }
             }
+
+            rootLogger.worker(
+              "REALTIME_EVENT_PROCESSED",
+              `Evento de sessão processado [tenant: ${session.tenant_id}]: status = ${session.status}, is_active = ${session.is_active}`,
+              { operationId: eventOpId, tenantId: session.tenant_id, status: session.status }
+            );
 
             await startWorkerForTenant(
               session.tenant_id,

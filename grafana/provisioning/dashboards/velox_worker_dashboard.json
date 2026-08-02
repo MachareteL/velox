@@ -1,0 +1,136 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": true,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "Volume de Logs por Nível (Info / Warn / Error)",
+      "type": "timeseries",
+      "datasource": "Loki",
+      "targets": [
+        {
+          "datasource": "Loki",
+          "editorMode": "code",
+          "expr": "sum by (level) (count_over_time({app=\"velox-worker\"} | json | level=~\"$level\" | tenantId=~\"$tenantId\" | sessionId=~\"$sessionId\" | operationId=~\"$operationId\" | socketId=~\"$socketId\" | category=~\"$category\" | event=~\"$event\" [$__interval]))",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 18, "w": 24, "x": 0, "y": 4 },
+      "id": 2,
+      "title": "Logs em Tempo Real - Velox Worker",
+      "type": "logs",
+      "datasource": "Loki",
+      "targets": [
+        {
+          "datasource": "Loki",
+          "editorMode": "code",
+          "expr": "{app=\"velox-worker\"} | json | level=~\"$level\" | tenantId=~\"$tenantId\" | sessionId=~\"$sessionId\" | operationId=~\"$operationId\" | socketId=~\"$socketId\" | category=~\"$category\" | event=~\"$event\" |~ \"(?i)$search\"",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showLabels": false,
+        "wrapLogMessage": true,
+        "enableLogDetails": true,
+        "showTime": true,
+        "showCommonLabels": false
+      }
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["velox", "worker", "pino", "loki"],
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": ["5s", "10s", "30s", "1m"]
+  },
+  "timezone": "browser",
+  "title": "Velox Worker - Observabilidade de Logs",
+  "uid": "velox-worker-logs",
+  "version": 1,
+  "templating": {
+    "list": [
+      {
+        "name": "tenantId",
+        "label": "Tenant ID",
+        "type": "textbox",
+        "query": "",
+        "current": { "text": ".*", "value": ".*" }
+      },
+      {
+        "name": "sessionId",
+        "label": "Session ID",
+        "type": "textbox",
+        "query": "",
+        "current": { "text": ".*", "value": ".*" }
+      },
+      {
+        "name": "operationId",
+        "label": "Operation ID",
+        "type": "textbox",
+        "query": "",
+        "current": { "text": ".*", "value": ".*" }
+      },
+      {
+        "name": "socketId",
+        "label": "Socket ID",
+        "type": "textbox",
+        "query": "",
+        "current": { "text": ".*", "value": ".*" }
+      },
+      {
+        "name": "category",
+        "label": "Categoria",
+        "type": "textbox",
+        "query": "",
+        "current": { "text": ".*", "value": ".*" }
+      },
+      {
+        "name": "event",
+        "label": "Evento",
+        "type": "textbox",
+        "query": "",
+        "current": { "text": ".*", "value": ".*" }
+      },
+      {
+        "name": "level",
+        "label": "Log Level",
+        "type": "custom",
+        "options": [
+          { "text": "Todos", "value": ".*", "selected": true },
+          { "text": "error", "value": "error", "selected": false },
+          { "text": "warn", "value": "warn", "selected": false },
+          { "text": "info", "value": "info", "selected": false },
+          { "text": "debug", "value": "debug", "selected": false }
+        ],
+        "query": ".*",
+        "current": { "text": "Todos", "value": ".*" }
+      },
+      {
+        "name": "search",
+        "label": "Busca Texto Livre",
+        "type": "textbox",
+        "query": "",
+        "current": { "text": "", "value": "" }
+      }
+    ]
+  }
+}

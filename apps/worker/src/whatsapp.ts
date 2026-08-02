@@ -171,7 +171,7 @@ export class WhatsAppWorker {
    * Retorna false apenas se estiver expressamente parando ou encerrado.
    */
   public isRunning(): boolean {
-    return this.state !== "STOPPED" && this.state !== "STOPPING" && this.state !== "DISCONNECTED";
+    return this.state !== "STOPPED" && this.state !== "STOPPING";
   }
 
   public getWorkerState(): WorkerState {
@@ -402,13 +402,21 @@ export class WhatsAppWorker {
 
       // ── Cenário 1: Logout explícito (loggedOut / 401 / multideviceMismatch) ──
       if (isLoggedOut) {
-        this.logger.warn(
-          `Logout explícito ou credenciais revogadas para tenant ${this.tenantId}. Expurgando pasta e solicitando QR...`
+        this.logger.worker(
+          "SESSION_PURGE_CONFIRMED_LOGOUT",
+          `Logout explícito ou credenciais revogadas para tenant ${this.tenantId}. Expurgando pasta e solicitando QR...`,
+          { statusCode, operationId }
         );
         this.qrCount = 0;
         this.reconnectAttempts = 0;
         await this.stopInternal(operationId, "LOGGED_OUT");
         await new Promise((res) => setTimeout(res, 1000));
+        
+        this.logger.worker(
+          "SESSION_PURGE",
+          `Expurgando pasta de sessão do tenant ${this.tenantId}...`,
+          { operationId }
+        );
         purgeBaileysSessionDir(this.tenantId, this.logger);
 
         await this.changeState("NEED_QR", null, null, "Logged Out - Purged Credentials", source, operationId);
@@ -417,7 +425,7 @@ export class WhatsAppWorker {
           tenant_id: this.tenantId,
           level: "WARN",
           event_type: "SESSION_LOGOUT",
-          message: "Sessão desautorizada/corrompida detectada. Pasta de sessão expurgada.",
+          message: "Sessão desautorizada detectada. Pasta de sessão expurgada.",
         });
 
         try {
@@ -446,6 +454,14 @@ export class WhatsAppWorker {
       }
 
       // ── Cenário 3: Erro transitório / badSession (500) — reconectar com backoff (SEM apagar pasta!) ──
+      if (statusCode === 500 || reason.includes("badSession")) {
+        this.logger.worker(
+          "BAD_SESSION_RECOVERY",
+          `Erro 500/badSession detectado para tenant ${this.tenantId}. Iniciando recuperação sem expurgar sessão.`,
+          { statusCode, reason, operationId }
+        );
+      }
+
       await this.changeState("RECONNECTING", null, null, `Disconnected: ${reason}`, source, operationId);
 
       this.reconnectAttempts++;
