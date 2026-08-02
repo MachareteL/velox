@@ -15,9 +15,9 @@ export interface WhatsAppProviderEvents {
 }
 
 export interface WhatsAppProvider {
-  start(): Promise<void>;
+  start(operationId?: string): Promise<void>;
   stop(): Promise<void>;
-  reconnect(): Promise<void>;
+  reconnect(operationId?: string): Promise<void>;
   isConnected(): boolean;
   requestPairingCode(phoneNumber: string): Promise<string>;
   getConnectionState(): string;

@@ -8,11 +8,13 @@ import pino from "pino";
 import EventEmitter from "events";
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import {
   WhatsAppProvider,
   WhatsAppProviderEvents,
   IncomingMessagePayload,
 } from "./whatsapp-provider";
+import { WorkerLogger, LoggerFactory } from "./logger";
 
 export function getBaileysAuthDataPath(): string {
   return (
@@ -22,15 +24,15 @@ export function getBaileysAuthDataPath(): string {
   );
 }
 
-export function purgeBaileysSessionDir(tenantId: string): void {
+export function purgeBaileysSessionDir(tenantId: string, logger?: WorkerLogger): void {
   try {
     const authDataPath = getBaileysAuthDataPath();
     const sessionDir = path.join(authDataPath, `session-tenant_${tenantId}`);
 
     if (fs.existsSync(sessionDir)) {
-      console.log(
-        `[BaileysProvider] Expurgando diretório de sessão desautorizada/desconectada: ${sessionDir}`
-      );
+      if (logger) {
+        logger.warn(`[BaileysProvider] Expurgando diretório de sessão desautorizada (loggedOut): ${sessionDir}`);
+      }
       fs.rmSync(sessionDir, {
         recursive: true,
         force: true,
@@ -39,9 +41,9 @@ export function purgeBaileysSessionDir(tenantId: string): void {
       });
     }
   } catch (err: any) {
-    console.warn(
-      `[BaileysProvider] Erro ao expurgar pasta de sessão do tenant ${tenantId}: ${err?.message}`
-    );
+    if (logger) {
+      logger.error(`[BaileysProvider] Erro ao expurgar pasta de sessão do tenant ${tenantId}:`, err);
+    }
   }
 }
 
@@ -51,9 +53,6 @@ function createInMemoryCacheStore(maxSize: number = 1000) {
     get: <T>(key: string): T | undefined => store.get(key),
     set: <T>(key: string, value: T): void => {
       if (store.size >= maxSize && !store.has(key)) {
-        // Estratégia de purga simplificada: limpa todo o cache quando atinge o limite
-        // Evita vazamento de memória sem a complexidade de um LRU completo
-        console.warn(`[CacheStore] Limite de ${maxSize} atingido. Limpando cache para evitar memory leak.`);
         store.clear();
       }
       store.set(key, value);
@@ -73,48 +72,91 @@ export class BaileysProvider implements WhatsAppProvider {
   private sessionDir: string;
   private msgRetryCounterCache = createInMemoryCacheStore();
 
-  private disconnectSocket(): void {
-    if (this.socket) {
-      try {
-        this.socket.ev.removeAllListeners('creds.update');
-        this.socket.ev.removeAllListeners('connection.update');
-        this.socket.ev.removeAllListeners('messages.upsert');
-        this.socket.end(undefined);
-      } catch (_) {}
-      this.socket = null;
-    }
-  }
+  private socketId: string | null = null;
+  private logger: WorkerLogger;
 
-  constructor(private tenantId: string) {
+  constructor(private tenantId: string, logger?: WorkerLogger) {
     const authDataPath = getBaileysAuthDataPath();
     this.sessionDir = path.join(authDataPath, `session-tenant_${tenantId}`);
+    this.logger = logger || LoggerFactory.forTenant(tenantId);
   }
 
-  public async start(): Promise<void> {
-    if (this.connectionState === "CONNECTING" || this.connectionState === "CONNECTED") {
-      console.log(
-        `[BaileysProvider] Conexão já em andamento ou conectada para tenant ${this.tenantId}`
+  public setLogger(logger: WorkerLogger): void {
+    this.logger = logger;
+  }
+
+  public getSocketId(): string | null {
+    return this.socketId;
+  }
+
+  private disconnectSocket(): void {
+    if (this.socket) {
+      const sockToClose = this.socket;
+      this.socket = null;
+      try {
+        sockToClose.ev.removeAllListeners("creds.update");
+        sockToClose.ev.removeAllListeners("connection.update");
+        sockToClose.ev.removeAllListeners("messages.upsert");
+        sockToClose.end(undefined);
+
+        // Fallback defensivo: se a conexão TCP não fechar em 3s, força ws.terminate()
+        const ws = (sockToClose as any).ws;
+        if (ws && typeof ws.terminate === "function") {
+          setTimeout(() => {
+            try {
+              if (ws.readyState !== 3 /* CLOSED */) {
+                ws.terminate();
+              }
+            } catch (_) {}
+          }, 3000);
+        }
+      } catch (_) {}
+    }
+  }
+
+  public async start(operationId?: string): Promise<void> {
+    if (this.connectionState === "CONNECTING" || this.connectionState === "CONNECTED" || this.socket !== null) {
+      this.logger.socket(
+        "CONCURRENT_SOCKET_DETECTED",
+        `Detecção de socket existente em estado ${this.connectionState} ao iniciar. Destruindo socket antigo...`,
+        { existingSocketId: this.socketId, operationId }
       );
-      return;
+      this.disconnectSocket();
     }
 
-    this.disconnectSocket();
     this.isExplicitStop = false;
     this.connectionState = "CONNECTING";
+    this.socketId = crypto.randomUUID();
+    this.logger = this.logger.child({ socketId: this.socketId, operationId });
+
+    this.logger.socket("SOCKET_CREATED", `Novo socket Baileys instanciado para tenant ${this.tenantId}`);
 
     if (!fs.existsSync(this.sessionDir)) {
       fs.mkdirSync(this.sessionDir, { recursive: true });
     }
 
-    const logger = pino({ level: "silent" });
-    const { state, saveCreds } = await useMultiFileAuthState(this.sessionDir);
+    const tLoadStart = Date.now();
+    let state: any;
+    let saveCreds: any;
+
+    try {
+      const authResult = await useMultiFileAuthState(this.sessionDir);
+      state = authResult.state;
+      saveCreds = authResult.saveCreds;
+      this.logger.auth("AUTH_LOAD", Date.now() - tLoadStart, true);
+    } catch (authErr: any) {
+      this.logger.auth("AUTH_LOAD", Date.now() - tLoadStart, false, { error: authErr.message });
+      throw authErr;
+    }
+
+    const baileysInternalLogger = pino({ level: "silent" });
 
     const sock = makeWASocket({
       auth: {
         creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, logger as any),
+        keys: makeCacheableSignalKeyStore(state.keys, baileysInternalLogger as any),
       },
-      logger: logger as any,
+      logger: baileysInternalLogger as any,
       printQRInTerminal: false,
       browser: ["Velox SaaS Worker", "Chrome", "120.0.0.0"],
       generateHighQualityLinkPreview: false,
@@ -123,66 +165,70 @@ export class BaileysProvider implements WhatsAppProvider {
       markOnlineOnConnect: true,
       retryRequestDelayMs: 500,
       msgRetryCounterCache: this.msgRetryCounterCache as any,
-      getMessage: async () => {
-        return undefined;
-      },
+      getMessage: async () => undefined,
     });
 
     this.socket = sock;
 
-    // Persistência de credenciais
-    sock.ev.on("creds.update", saveCreds);
+    // Wrappers de log para salvamento de credenciais
+    sock.ev.on("creds.update", async () => {
+      const tSaveStart = Date.now();
+      try {
+        await saveCreds();
+        this.logger.auth("AUTH_SAVE", Date.now() - tSaveStart, true);
+        this.logger.auth("CREDS_UPDATED", undefined, true);
+      } catch (saveErr: any) {
+        this.logger.auth("AUTH_SAVE", Date.now() - tSaveStart, false, { error: saveErr.message });
+      }
+    });
 
     // Eventos do ciclo de vida da conexão
     sock.ev.on("connection.update", (update) => {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        console.log(`[BaileysProvider] Novo QR Code gerado para tenant ${this.tenantId}`);
         this.emitter.emit("qr", qr);
       }
 
       if (connection === "connecting") {
         this.connectionState = "CONNECTING";
       } else if (connection === "open") {
-        console.log(
-          `[BaileysProvider] Socket Baileys CONECTADO com sucesso para tenant ${this.tenantId}`
-        );
         this.connectionState = "CONNECTED";
+        this.logger.socket("SOCKET_CONNECTED", `Socket Baileys CONECTADO com sucesso para tenant ${this.tenantId}`);
         this.emitter.emit("authenticated");
         this.emitter.emit("ready");
       } else if (connection === "close") {
         this.connectionState = "DISCONNECTED";
         const boomError = lastDisconnect?.error as any;
         const statusCode: number | undefined =
-          boomError?.output?.statusCode ??
-          boomError?.statusCode ??
-          undefined;
-        
+          boomError?.output?.statusCode ?? boomError?.statusCode ?? undefined;
         const reason = lastDisconnect?.error?.message || `Disconnect statusCode: ${statusCode}`;
-        
-        // Utilizando os motivos oficiais de desconexão da versão instalada
+
+        // Confirmação estrita de logout (somente loggedOut/401/multideviceMismatch)
+        // badSession (500) NÃO é tratado como logout imediato para permitir tentativa de recuperação
         const isLoggedOut =
           statusCode === DisconnectReason.loggedOut ||
-          statusCode === DisconnectReason.badSession ||
-          statusCode === DisconnectReason.multideviceMismatch ||
-          statusCode === 403;   // Acesso negado/Banimento não possui enum padrão em algumas builds, 403 é clássico.
+          statusCode === 401 ||
+          statusCode === DisconnectReason.multideviceMismatch;
 
         const disconnectReasonMap: Record<number, string> = {
-          [DisconnectReason.loggedOut]: 'loggedOut',
-          [DisconnectReason.timedOut]: 'timedOut',
-          [DisconnectReason.multideviceMismatch]: 'multideviceMismatch',
-          [DisconnectReason.connectionClosed]: 'connectionClosed',
-          [DisconnectReason.connectionReplaced]: 'connectionReplaced',
-          [DisconnectReason.badSession]: 'badSession',
-          [DisconnectReason.restartRequired]: 'restartRequired',
-          403: 'forbidden'
+          [DisconnectReason.loggedOut]: "loggedOut",
+          [DisconnectReason.timedOut]: "timedOut",
+          [DisconnectReason.multideviceMismatch]: "multideviceMismatch",
+          [DisconnectReason.connectionClosed]: "connectionClosed",
+          [DisconnectReason.connectionReplaced]: "connectionReplaced",
+          [DisconnectReason.badSession]: "badSession",
+          [DisconnectReason.restartRequired]: "restartRequired",
+          403: "forbidden",
         };
-        const reasonLabel = statusCode ? (disconnectReasonMap[statusCode] || 'unknown') : 'undefined';
+        const reasonLabel = statusCode ? disconnectReasonMap[statusCode] || "unknown" : "undefined";
 
-        console.warn(
-          `[BaileysProvider] Conexão fechada para tenant ${this.tenantId} (statusCode: ${statusCode ?? 'undefined'} [${reasonLabel}], LoggedOut: ${isLoggedOut})`
-        );
+        this.logger.socket("SOCKET_DISCONNECTED", `Socket fechado para tenant ${this.tenantId}`, {
+          statusCode,
+          reasonLabel,
+          isLoggedOut,
+          reason,
+        });
 
         this.emitter.emit("disconnected", reason, isLoggedOut, statusCode);
       }
@@ -197,7 +243,6 @@ export class BaileysProvider implements WhatsAppProvider {
 
         const sender = msg.key.remoteJid || "";
 
-        // Ignorar grupos, broadcasts e newsletters
         if (
           sender.endsWith("@g.us") ||
           sender.endsWith("@broadcast") ||
@@ -206,7 +251,6 @@ export class BaileysProvider implements WhatsAppProvider {
           continue;
         }
 
-        // Resolve mensagens encapsuladas (temporárias/viewOnce)
         let innerMessage = msg.message;
         if (innerMessage.ephemeralMessage) {
           innerMessage = innerMessage.ephemeralMessage.message!;
@@ -216,7 +260,6 @@ export class BaileysProvider implements WhatsAppProvider {
           innerMessage = innerMessage.viewOnceMessageV2.message!;
         }
 
-        // Extração de corpo de texto da mensagem Baileys
         const body =
           innerMessage.conversation ||
           innerMessage.extendedTextMessage?.text ||
@@ -252,12 +295,12 @@ export class BaileysProvider implements WhatsAppProvider {
     this.disconnectSocket();
   }
 
-  public async reconnect(): Promise<void> {
+  public async reconnect(operationId?: string): Promise<void> {
     this.disconnectSocket();
     this.isExplicitStop = false;
     this.connectionState = "DISCONNECTED";
     await new Promise((res) => setTimeout(res, 2000));
-    await this.start();
+    await this.start(operationId);
   }
 
   public isConnected(): boolean {
@@ -268,13 +311,8 @@ export class BaileysProvider implements WhatsAppProvider {
     return this.connectionState;
   }
 
-  /**
-   * Verifica a saúde da conexão em nível de transporte usando propriedades públicas do Baileys.
-   */
   public isSocketOpen(): boolean {
     if (!this.socket) return false;
-    // O Baileys expõe publícamente os getters isOpen/isClosed/isConnecting em sock.ws
-    // É seguro utilizar essa informação sem acessar o socket TCP bruto.
     const ws = (this.socket as any).ws;
     return ws && ws.isOpen === true;
   }
@@ -284,11 +322,9 @@ export class BaileysProvider implements WhatsAppProvider {
       throw new Error("Socket Baileys não está inicializado para gerar o Código de Pareamento.");
     }
     const cleanPhone = phoneNumber.replace(/\D/g, "");
-    console.log(
-      `[BaileysProvider] Solicitando Pairing Code Baileys para número ${cleanPhone} [Tenant: ${this.tenantId}]...`
-    );
+    this.logger.info(`Solicitando Pairing Code Baileys para número ${cleanPhone}...`);
     const code = await this.socket.requestPairingCode(cleanPhone);
-    console.log(`[BaileysProvider] Pairing Code obtido: ${code}`);
+    this.logger.info(`Pairing Code obtido: ${code}`);
     return code;
   }
 

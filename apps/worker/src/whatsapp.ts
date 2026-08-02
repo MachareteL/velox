@@ -1,5 +1,6 @@
 import QRCode from "qrcode";
 import { SupabaseClient } from "@supabase/supabase-js";
+import { Mutex } from "async-mutex";
 import {
   recordCapturedCall,
   recordSystemLog,
@@ -9,6 +10,7 @@ import { VeloxScraper } from "./scraper";
 import { calcularPrevia } from "./calculator";
 import { WhatsAppProvider, IncomingMessagePayload } from "./whatsapp-provider";
 import { BaileysProvider, purgeBaileysSessionDir } from "./baileys-provider";
+import { WorkerLogger, LoggerFactory } from "./logger";
 
 /**
  * Extrai a ChaveConvite da URL enviada pela seguradora.
@@ -48,18 +50,31 @@ export interface WorkerMetrics {
   };
 }
 
-export type WorkerState = "STARTING" | "CONNECTING" | "CONNECTED" | "DEGRADED" | "RECONNECTING" | "DISCONNECTED" | "NEED_QR" | "STOPPING" | "STOPPED";
+export type WorkerState =
+  | "STARTING"
+  | "CONNECTING"
+  | "CONNECTED"
+  | "DEGRADED"
+  | "RECONNECTING"
+  | "DISCONNECTED"
+  | "NEED_QR"
+  | "STOPPING"
+  | "STOPPED";
 
 export class WhatsAppWorker {
   private provider!: WhatsAppProvider;
   private scraper: VeloxScraper;
   private inviteRegex: RegExp;
+  private logger: WorkerLogger;
+
+  // Trava de exclusão mútua em nível de Worker
+  private actionLock = new Mutex();
 
   // Máquina de estados explícita garante proteção contra race conditions
   private state: WorkerState = "STOPPED";
   private isActive: boolean = true;
   private isConnected: boolean = false;
-  
+
   // Watchdog
   private watchdogTimer: NodeJS.Timeout | null = null;
 
@@ -71,8 +86,6 @@ export class WhatsAppWorker {
   private reconnectAttempts: number = 0;
   private reconnectAttemptsTotal: number = 0;
   private maxReconnectAttempts: number = 5;
-  private reconnectCooldownWindowMs: number = 10 * 60 * 1000;
-  private lastReconnectTime: number = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private authTimeoutTimer: NodeJS.Timeout | null = null;
 
@@ -91,8 +104,10 @@ export class WhatsAppWorker {
     private sessionId: string,
     private supabase: SupabaseClient,
     targetRegexPattern?: string,
-    private phoneNumber?: string | null
+    private phoneNumber?: string | null,
+    logger?: WorkerLogger
   ) {
+    this.logger = logger || LoggerFactory.forTenant(this.tenantId, this.sessionId);
     const defaultPattern =
       "https:\\/\\/prestador\\.veloxcontactcenter\\.com\\.br\\/prestador\\/ConvitePrestador\\/VisualizarConvite\\?ChaveConvite=[a-f0-9\\-]+";
     this.inviteRegex = new RegExp(
@@ -100,15 +115,20 @@ export class WhatsAppWorker {
       "i"
     );
     this.scraper = new VeloxScraper(
-      parseInt(process.env.HTTP_TIMEOUT || "5000", 10)
+      parseInt(process.env.HTTP_TIMEOUT || "5000", 10),
+      this.logger
     );
 
     this.provider = this.createProvider();
   }
 
-  private createProvider(): WhatsAppProvider {
-    const provider = new BaileysProvider(this.tenantId);
-    this.setupListenersForProvider(provider);
+  public getLogger(): WorkerLogger {
+    return this.logger;
+  }
+
+  private createProvider(operationId?: string): WhatsAppProvider {
+    const provider = new BaileysProvider(this.tenantId, this.logger);
+    this.setupListenersForProvider(provider, operationId);
     return provider;
   }
 
@@ -116,36 +136,45 @@ export class WhatsAppWorker {
     const previous = this.isActive;
     this.isActive = active;
     if (previous !== active) {
-      console.log(
-        `[Worker] Estado da automação alterado para tenant ${this.tenantId}: ${
-          active ? "LIGADO" : "PAUSADO"
-        }`
+      this.logger.worker(
+        "AUTOMATION_TOGGLED",
+        `Estado da automação alterado para tenant ${this.tenantId}: ${active ? "LIGADO" : "PAUSADO"}`,
+        { active }
       );
     }
   }
 
-  public async restartForFreshAuth(phoneNumber?: string | null): Promise<void> {
-    console.log(
-      `[Worker] Forçando reinicialização limpa de autenticação Baileys para tenant ${this.tenantId}...`
-    );
-    this.phoneNumber = phoneNumber !== undefined ? phoneNumber : this.phoneNumber;
-    this.qrCount = 0;
-    await this.stop();
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    purgeBaileysSessionDir(this.tenantId);
-    this.provider = this.createProvider();
-    await this.start();
+  public async restartForFreshAuth(phoneNumber?: string | null, operationId?: string): Promise<void> {
+    return this.actionLock.runExclusive(async () => {
+      this.logger.worker(
+        "WORKER_RESTART",
+        `Forçando reinicialização limpa de autenticação Baileys para tenant ${this.tenantId}...`,
+        { operationId }
+      );
+      this.phoneNumber = phoneNumber !== undefined ? phoneNumber : this.phoneNumber;
+      this.qrCount = 0;
+
+      await this.stopInternal(operationId, "FRESH_AUTH_RESTART");
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      purgeBaileysSessionDir(this.tenantId, this.logger);
+      this.provider = this.createProvider(operationId);
+      await this.startInternal(operationId, "FRESH_AUTH_RESTART");
+    });
   }
 
   public getPhoneNumber(): string | null | undefined {
     return this.phoneNumber;
   }
 
+  /**
+   * Um worker é considerado existente/ativo se estiver em qualquer estado não final.
+   * Retorna false apenas se estiver expressamente parando ou encerrado.
+   */
   public isRunning(): boolean {
-    return this.state !== "STOPPED" && this.state !== "NEED_QR" && this.state !== "DISCONNECTED";
+    return this.state !== "STOPPED" && this.state !== "STOPPING" && this.state !== "DISCONNECTED";
   }
 
-  public getWorkerState(): string {
+  public getWorkerState(): WorkerState {
     return this.state;
   }
 
@@ -153,18 +182,34 @@ export class WhatsAppWorker {
    * Único ponto de escrita no banco de dados para evitar atualizações desnecessárias.
    * Transita a máquina de estados local e reflete a fonte da verdade no Supabase.
    */
-  private async changeState(newState: WorkerState, qrDataUrl: string | null = null, pairingCode: string | null = null): Promise<void> {
+  private async changeState(
+    newState: WorkerState,
+    qrDataUrl: string | null = null,
+    pairingCode: string | null = null,
+    reason?: string,
+    source?: string,
+    operationId?: string
+  ): Promise<void> {
     if (this.state === newState && !qrDataUrl && !pairingCode) return;
-    
-    console.log(`[Worker FSM] Tenant ${this.tenantId} transitando de ${this.state} para ${newState}`);
+
+    const previousState = this.state;
     this.state = newState;
-    
+
+    this.logger.fsm(previousState, newState, reason, source, { operationId });
+
     // Mapeamento para o status esperado no BD
     let dbStatus: any = "DISCONNECTED";
-    if (newState === "STARTING" || newState === "CONNECTING" || newState === "RECONNECTING") dbStatus = "AUTHENTICATING";
+    if (newState === "STARTING" || newState === "CONNECTING" || newState === "RECONNECTING")
+      dbStatus = "AUTHENTICATING";
     else if (newState === "CONNECTED") dbStatus = "CONNECTED";
     else if (newState === "NEED_QR") dbStatus = "DISCONNECTED_NEED_QR";
-    else if (newState === "STOPPED" || newState === "STOPPING" || newState === "DISCONNECTED" || newState === "DEGRADED") dbStatus = "DISCONNECTED";
+    else if (
+      newState === "STOPPED" ||
+      newState === "STOPPING" ||
+      newState === "DISCONNECTED" ||
+      newState === "DEGRADED"
+    )
+      dbStatus = "DISCONNECTED";
 
     try {
       await updateSessionStatus(
@@ -172,26 +217,28 @@ export class WhatsAppWorker {
         this.sessionId,
         dbStatus,
         qrDataUrl,
-        "vps-worker-01",
+        process.env.WORKER_ID || "vps-worker-01",
         pairingCode,
         this.phoneNumber || null
       );
     } catch (err: any) {
-      console.error(`[Worker FSM] Erro ao sincronizar DB para tenant ${this.tenantId}:`, err.message);
+      this.logger.error(`[Worker FSM] Erro ao sincronizar DB para tenant ${this.tenantId}:`, err);
     }
   }
 
   private startWatchdog(): void {
     if (this.watchdogTimer) clearInterval(this.watchdogTimer);
-    
+
     this.watchdogTimer = setInterval(async () => {
-      // Watchdog só atua se acreditarmos estar conectados
       if (this.state === "CONNECTED") {
         const isOpen = this.provider?.isSocketOpen();
         if (!isOpen) {
-          console.warn(`[Worker Watchdog] 👻 Sessão fantasma detectada (Worker CONNECTED mas transporte TCP/WebSocket morto) para tenant ${this.tenantId}.`);
-          await this.changeState("DEGRADED");
-          await this.handleDisconnected("Watchdog Ghost Session Detected", false, undefined);
+          this.logger.watchdog(
+            "GHOST_SESSION_DETECTED",
+            `Sessão fantasma detectada (Worker CONNECTED mas transporte TCP/WebSocket morto) para tenant ${this.tenantId}.`
+          );
+          await this.changeState("DEGRADED", null, null, "Ghost Session Detected", "WATCHDOG");
+          await this.handleDisconnected("Watchdog Ghost Session Detected", false, undefined, undefined, "WATCHDOG");
         }
       }
     }, 30000);
@@ -204,50 +251,43 @@ export class WhatsAppWorker {
     }
   }
 
-  public async requestPairingCodeOnDemand(phoneNumber: string): Promise<string | null> {
+  public async requestPairingCodeOnDemand(phoneNumber: string, operationId?: string): Promise<string | null> {
     const cleanPhone = phoneNumber.replace(/\D/g, "");
     this.phoneNumber = cleanPhone;
     this.qrCount = 0;
 
     if (!this.isRunning()) {
-      console.log(
-        `[Worker] Robô estava pausado/parado. Reiniciando cliente para tenant ${this.tenantId}...`
-      );
-      await this.start();
+      this.logger.info(`Robô estava pausado/parado. Reiniciando cliente para tenant ${this.tenantId}...`);
+      await this.start(operationId, "PAIRING_CODE_REQUEST");
       return null;
     }
 
     try {
-      console.log(
-        `[Worker Baileys] Solicitando Código de Pareamento sob demanda para número ${cleanPhone}...`
-      );
+      this.logger.info(`Solicitando Código de Pareamento sob demanda para número ${cleanPhone}...`);
       const pairingCode = await this.provider.requestPairingCode(cleanPhone);
-      console.log(`[Worker Baileys] Código de Pareamento gerado sob demanda: ${pairingCode}`);
+      this.logger.info(`Código de Pareamento gerado sob demanda: ${pairingCode}`);
 
-      await this.changeState("NEED_QR", null, pairingCode);
+      await this.changeState("NEED_QR", null, pairingCode, "Pairing Code Generated", "PAIRING_REQUEST", operationId);
 
       await recordSystemLog(this.supabase, {
         tenant_id: this.tenantId,
         level: "INFO",
         event_type: "PAIRING_CODE_GENERATED",
         message: `Código de Pareamento por telefone gerado com sucesso: ${pairingCode}`,
-        details: { phoneNumber: cleanPhone, pairingCode },
+        details: { phoneNumber: cleanPhone, pairingCode, operationId },
       });
 
       return pairingCode;
     } catch (pairErr: any) {
       const errMsg = pairErr?.message || String(pairErr || "");
-      console.error(
-        "[Worker Baileys] Erro ao solicitar Código de Pareamento sob demanda:",
-        errMsg
-      );
+      this.logger.error("Erro ao solicitar Código de Pareamento sob demanda:", pairErr);
 
       await recordSystemLog(this.supabase, {
         tenant_id: this.tenantId,
         level: "ERROR",
         event_type: "PAIRING_CODE_ERROR",
         message: `Falha ao gerar código por telefone: ${errMsg}`,
-        details: { phoneNumber: cleanPhone, error: errMsg },
+        details: { phoneNumber: cleanPhone, error: errMsg, operationId },
       });
 
       return null;
@@ -256,44 +296,38 @@ export class WhatsAppWorker {
 
   // ── Event Wiring ──────────────────────────────────────────────────────
 
-  /**
-   * Conecta os eventos do provider aos handlers especializados.
-   */
-  private setupListenersForProvider(provider: WhatsAppProvider): void {
-    provider.on("qr", (qr) => this.handleQrGenerated(qr));
-    provider.on("authenticated", () => this.handleAuthenticated());
-    provider.on("ready", () => this.handleReady());
-    provider.on("disconnected", (reason, isLoggedOut, statusCode) => this.handleDisconnected(reason, isLoggedOut, statusCode));
-    provider.on("message", (msg) => this.handleIncomingMessage(msg));
+  private setupListenersForProvider(provider: WhatsAppProvider, operationId?: string): void {
+    provider.on("qr", (qr) => this.handleQrGenerated(qr, operationId));
+    provider.on("authenticated", () => this.handleAuthenticated(operationId));
+    provider.on("ready", () => this.handleReady(operationId));
+    provider.on("disconnected", (reason, isLoggedOut, statusCode) =>
+      this.handleDisconnected(reason, isLoggedOut, statusCode, operationId, "SOCKET")
+    );
+    provider.on("message", (msg) => this.handleIncomingMessage(msg, operationId));
   }
 
   // ── Lifecycle Event Handlers ──────────────────────────────────────────
 
-  /**
-   * Handler de geração de QR Code com proteção anti-spam.
-   */
-  private async handleQrGenerated(qrText: string): Promise<void> {
+  private async handleQrGenerated(qrText: string, operationId?: string): Promise<void> {
     this.lastEventAt = Date.now();
     this.qrCount++;
 
     if (this.qrCount > this.maxQrAttempts) {
       if (this.qrCount === this.maxQrAttempts + 1) {
-        console.warn(
-          `[Worker Anti-Spam] Limite de ${this.maxQrAttempts} renovações de QR Code atingido para tenant ${this.tenantId}. Encerrando socket inativo...`
+        this.logger.warn(
+          `Limite de ${this.maxQrAttempts} renovações de QR Code atingido para tenant ${this.tenantId}. Encerrando socket inativo...`
         );
-        await this.changeState("DISCONNECTED");
-        await this.stop();
+        await this.changeState("DISCONNECTED", null, null, "QR Code limit reached", "ANTI_SPAM", operationId);
+        await this.stop(operationId, "ANTI_SPAM_LIMIT");
       }
       return;
     }
 
-    console.log(
-      `[Worker Baileys] Geração de autenticação #${this.qrCount}/${this.maxQrAttempts} recebida para tenant ${this.tenantId}`
-    );
+    this.logger.info(`Geração de autenticação #${this.qrCount}/${this.maxQrAttempts} recebida para tenant ${this.tenantId}`);
 
     try {
       const qrDataUrl = await QRCode.toDataURL(qrText);
-      await this.changeState("NEED_QR", qrDataUrl);
+      await this.changeState("NEED_QR", qrDataUrl, null, "QR Generated", "BAILEYS_SOCKET", operationId);
 
       await recordSystemLog(this.supabase, {
         tenant_id: this.tenantId,
@@ -302,21 +336,16 @@ export class WhatsAppWorker {
         message: "Novo Código de Conexão (QR Code) gerado via Baileys.",
       });
     } catch (err: any) {
-      console.error("[Worker Baileys] Erro ao converter QR Code:", err.message);
+      this.logger.error("Erro ao converter QR Code:", err);
     }
   }
 
-  /**
-   * Handler de autenticação em andamento.
-   */
-  private async handleAuthenticated(): Promise<void> {
+  private async handleAuthenticated(operationId?: string): Promise<void> {
     this.lastEventAt = Date.now();
     this.lastAuthenticatedAt = Date.now();
-    console.log(
-      `[Worker Baileys] ✨ Conexão autenticada/reconectando para tenant ${this.tenantId}...`
-    );
+    this.logger.info(`Conexão autenticada/reconectando para tenant ${this.tenantId}...`);
 
-    await this.changeState("CONNECTING");
+    await this.changeState("CONNECTING", null, null, "Session Authenticated", "BAILEYS_SOCKET", operationId);
 
     await recordSystemLog(this.supabase, {
       tenant_id: this.tenantId,
@@ -326,13 +355,10 @@ export class WhatsAppWorker {
     });
   }
 
-  /**
-   * Handler de sessão pronta e conectada.
-   */
-  private async handleReady(): Promise<void> {
+  private async handleReady(operationId?: string): Promise<void> {
     this.lastEventAt = Date.now();
     this.lastReadyAt = Date.now();
-    console.log(`[Worker Baileys] Socket WhatsApp conectado para tenant ${this.tenantId}`);
+    this.logger.socket("SOCKET_READY", `Socket WhatsApp conectado e PRONTO para tenant ${this.tenantId}`);
     this.isConnected = true;
     this.reconnectAttempts = 0;
 
@@ -341,7 +367,7 @@ export class WhatsAppWorker {
       this.authTimeoutTimer = null;
     }
 
-    await this.changeState("CONNECTED");
+    await this.changeState("CONNECTED", null, null, "Socket Ready", "BAILEYS_SOCKET", operationId);
 
     await recordSystemLog(this.supabase, {
       tenant_id: this.tenantId,
@@ -353,132 +379,126 @@ export class WhatsAppWorker {
 
   /**
    * Handler de desconexão com lógica de logout vs reconexão com backoff exponencial.
-   * Respeita maxReconnectAttempts para evitar loop infinito.
    */
-  private async handleDisconnected(reason: string, isLoggedOut: boolean, statusCode?: number): Promise<void> {
-    this.lastEventAt = Date.now();
-    this.lastDisconnectedAt = Date.now();
-    console.warn(
-      `[Worker Baileys] WhatsApp desconectado (${reason}) para tenant ${this.tenantId} [LoggedOut: ${isLoggedOut}, statusCode: ${statusCode ?? 'undefined'}]`
-    );
-    this.isConnected = false;
+  private async handleDisconnected(
+    reason: string,
+    isLoggedOut: boolean,
+    statusCode?: number,
+    operationId?: string,
+    source: string = "SOCKET"
+  ): Promise<void> {
+    return this.actionLock.runExclusive(async () => {
+      this.lastEventAt = Date.now();
+      this.lastDisconnectedAt = Date.now();
+      this.isConnected = false;
 
-    // ── Cenário 1: Logout explícito ou credenciais revogadas (badSession) ──
-    if (isLoggedOut) {
-      console.warn(
-        `[Worker Baileys] Logout explícito ou credenciais corrompidas para tenant ${this.tenantId}. Expurgando pasta e solicitando QR...`
-      );
-      this.qrCount = 0;
-      this.reconnectAttempts = 0;
-      await this.stop();
-      await new Promise((res) => setTimeout(res, 1000));
-      purgeBaileysSessionDir(this.tenantId);
-
-      await this.changeState("NEED_QR");
-
-      await recordSystemLog(this.supabase, {
-        tenant_id: this.tenantId,
-        level: "WARN",
-        event_type: "SESSION_LOGOUT",
-        message: "Sessão desautorizada/corrompida detectada. Pasta de sessão expurgada.",
+      this.logger.socket("SOCKET_DISCONNECTED", `WhatsApp desconectado para tenant ${this.tenantId}`, {
+        reason,
+        isLoggedOut,
+        statusCode,
+        operationId,
+        source,
       });
 
-      try {
-        this.provider = this.createProvider();
-        await this.start();
-      } catch (restartErr: any) {
-        console.error(
-          "[Worker Baileys] Erro ao reiniciar worker após logout:",
-          restartErr?.message
+      // ── Cenário 1: Logout explícito (loggedOut / 401 / multideviceMismatch) ──
+      if (isLoggedOut) {
+        this.logger.warn(
+          `Logout explícito ou credenciais revogadas para tenant ${this.tenantId}. Expurgando pasta e solicitando QR...`
         );
-      }
-      return;
-    }
+        this.qrCount = 0;
+        this.reconnectAttempts = 0;
+        await this.stopInternal(operationId, "LOGGED_OUT");
+        await new Promise((res) => setTimeout(res, 1000));
+        purgeBaileysSessionDir(this.tenantId, this.logger);
 
-    // ── Cenário 2: Restart Required (515) — reconexão imediata sem penalidade ──
-    if (statusCode === 515) {
-      console.log(
-        `[Worker Baileys] Servidor WhatsApp solicitou restart (515) para tenant ${this.tenantId}. Reconectando imediatamente...`
+        await this.changeState("NEED_QR", null, null, "Logged Out - Purged Credentials", source, operationId);
+
+        await recordSystemLog(this.supabase, {
+          tenant_id: this.tenantId,
+          level: "WARN",
+          event_type: "SESSION_LOGOUT",
+          message: "Sessão desautorizada/corrompida detectada. Pasta de sessão expurgada.",
+        });
+
+        try {
+          this.provider = this.createProvider(operationId);
+          await this.startInternal(operationId, "RESTART_AFTER_LOGOUT");
+        } catch (restartErr: any) {
+          this.logger.error("Erro ao reiniciar worker após logout:", restartErr);
+        }
+        return;
+      }
+
+      // ── Cenário 2: Restart Required (515) — reconexão imediata sem penalidade ──
+      if (statusCode === 515) {
+        this.logger.info(
+          `Servidor WhatsApp solicitou restart (515) para tenant ${this.tenantId}. Reconectando imediatamente...`
+        );
+        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = setTimeout(async () => {
+          try {
+            await this.provider.reconnect(operationId);
+          } catch (err: any) {
+            this.logger.error("Erro ao reconectar após restart 515:", err);
+          }
+        }, 3000);
+        return;
+      }
+
+      // ── Cenário 3: Erro transitório / badSession (500) — reconectar com backoff (SEM apagar pasta!) ──
+      await this.changeState("RECONNECTING", null, null, `Disconnected: ${reason}`, source, operationId);
+
+      this.reconnectAttempts++;
+      this.reconnectAttemptsTotal++;
+      this.lastReconnectAt = Date.now();
+
+      if (this.reconnectAttempts > this.maxReconnectAttempts) {
+        this.logger.error(
+          `Limite de reconexões atingido (${this.reconnectAttempts - 1}/${this.maxReconnectAttempts}) para tenant ${this.tenantId}. Parando tentativas automáticas.`
+        );
+        await this.changeState("DISCONNECTED", null, null, "Max Reconnect Attempts Exceeded", "RECONNECT_LIMIT", operationId);
+
+        await recordSystemLog(this.supabase, {
+          tenant_id: this.tenantId,
+          level: "ERROR",
+          event_type: "RECONNECT_LIMIT_REACHED",
+          message: `Limite de ${this.maxReconnectAttempts} tentativas de reconexão atingido. Worker parado. Intervenção manual necessária.`,
+          details: {
+            reconnectAttempts: this.reconnectAttempts - 1,
+            lastReason: reason,
+            lastStatusCode: statusCode,
+          },
+        });
+        return;
+      }
+
+      const isUndefinedStatus = statusCode === undefined;
+      const baseDelay = isUndefinedStatus ? 5000 : 2000;
+      const backoffDelayMs = Math.min(
+        60000,
+        Math.pow(2, this.reconnectAttempts) * baseDelay + Math.floor(Math.random() * 1000)
       );
-      // NÃO incrementar reconnectAttempts — é uma solicitação legítima do servidor
+      this.logger.info(
+        `Agendando reconexão automática #${this.reconnectAttempts}/${this.maxReconnectAttempts} em ${(
+          backoffDelayMs / 1000
+        ).toFixed(1)}s...`
+      );
+
       if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
       this.reconnectTimer = setTimeout(async () => {
         try {
-          await this.provider.reconnect();
+          this.logger.info(`Executando reconexão para tenant ${this.tenantId}...`);
+          await this.provider.reconnect(operationId);
         } catch (err: any) {
-          console.error(
-            "[Worker Baileys Reconnect] Erro ao reconectar após restart 515:",
-            err.message
-          );
+          this.logger.error("Erro ao reconectar sessão salva:", err);
         }
-      }, 3000);
-      return;
-    }
-
-    // ── Cenário 3: Erro transitório — reconectar com backoff ──
-    await this.changeState("RECONNECTING");
-
-    this.reconnectAttempts++;
-    this.reconnectAttemptsTotal++;
-    this.lastReconnectAt = Date.now();
-
-    // Verificar limite de reconexões
-    if (this.reconnectAttempts > this.maxReconnectAttempts) {
-      console.error(
-        `[Worker Baileys] ⛔ Limite de reconexões atingido (${this.reconnectAttempts - 1}/${this.maxReconnectAttempts}) para tenant ${this.tenantId}. Parando tentativas automáticas.`
-      );
-      await this.changeState("DISCONNECTED");
-
-      await recordSystemLog(this.supabase, {
-        tenant_id: this.tenantId,
-        level: "ERROR",
-        event_type: "RECONNECT_LIMIT_REACHED",
-        message: `Limite de ${this.maxReconnectAttempts} tentativas de reconexão atingido. Worker parado. Intervenção manual necessária.`,
-        details: {
-          reconnectAttempts: this.reconnectAttempts - 1,
-          lastReason: reason,
-          lastStatusCode: statusCode,
-        },
-      });
-      return;
-    }
-
-    // Backoff: statusCode undefined (Stream Errored) usa backoff mais longo
-    const isUndefinedStatus = statusCode === undefined;
-    const baseDelay = isUndefinedStatus ? 5000 : 2000;
-    const backoffDelayMs = Math.min(
-      60000,
-      Math.pow(2, this.reconnectAttempts) * baseDelay +
-        Math.floor(Math.random() * 1000)
-    );
-    console.log(
-      `[Worker Baileys Reconnect] Agendando reconexão automática #${this.reconnectAttempts}/${this.maxReconnectAttempts} em ${(
-        backoffDelayMs / 1000
-      ).toFixed(1)}s...`
-    );
-
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = setTimeout(async () => {
-      try {
-        console.log(
-          `[Worker Baileys Reconnect] Executando reconexão para tenant ${this.tenantId}...`
-        );
-        await this.provider.reconnect();
-      } catch (err: any) {
-        console.error(
-          "[Worker Baileys Reconnect] Erro ao reconectar sessão salva:",
-          err.message
-        );
-      }
-    }, backoffDelayMs);
+      }, backoffDelayMs);
+    });
   }
 
   // ── Message Processing Pipeline ───────────────────────────────────────
 
-  /**
-   * Handler de mensagem recebida. Detecta convites Velox e dispara o pipeline de aceite.
-   */
-  private async handleIncomingMessage(msg: IncomingMessagePayload): Promise<void> {
+  private async handleIncomingMessage(msg: IncomingMessagePayload, operationId?: string): Promise<void> {
     if (!msg || !msg.body) return;
 
     this.lastEventAt = Date.now();
@@ -488,51 +508,40 @@ export class WhatsAppWorker {
     if (!match) return;
 
     const targetUrl = match[0];
-    console.log(
-      `[Worker Baileys] 🎉 Convite Velox capturado no WhatsApp! [Tenant: ${this.tenantId}] Link: ${targetUrl}`
-    );
+    this.logger.info(`🎉 Convite Velox capturado no WhatsApp! Link: ${targetUrl}`, { operationId });
 
     if (!this.isActive) {
-      console.log(
-        `[Worker Baileys] Automação pausada pelo prestador. Ignorando convite: ${targetUrl}`
-      );
+      this.logger.warn(`Automação pausada pelo prestador. Ignorando convite: ${targetUrl}`);
       await recordSystemLog(this.supabase, {
         tenant_id: this.tenantId,
         level: "WARN",
         event_type: "AUTOMATION_PAUSED",
         message: "Convite recebido mas ignorado pois a automação está pausada pelo prestador.",
-        details: { url: targetUrl },
+        details: { url: targetUrl, operationId },
       });
       return;
     }
 
     try {
       const chaveConvite = extractChaveConvite(targetUrl);
-      const allocation = await this.resolveFleetAllocation(targetUrl, chaveConvite);
+      const allocation = await this.resolveFleetAllocation(targetUrl, chaveConvite, operationId);
 
-      // null indica que a capacidade da frota foi atingida — abortar silenciosamente
       if (!allocation) return;
 
       const { isDuplicate, availableVehicle } = allocation;
 
       setImmediate(async () => {
-        await this.executeInviteAcceptance(targetUrl, isDuplicate, availableVehicle);
+        await this.executeInviteAcceptance(targetUrl, isDuplicate, availableVehicle, operationId);
       });
     } catch (err: any) {
-      console.error(
-        "[Worker Baileys] Erro ao verificar capacidade da frota:",
-        err.message
-      );
+      this.logger.error("Erro ao verificar capacidade da frota:", err);
     }
   }
 
-  /**
-   * Verifica deduplicação por ChaveConvite no banco e disponibilidade da frota.
-   * Retorna null se a capacidade foi atingida (convite deve ser ignorado).
-   */
   private async resolveFleetAllocation(
     targetUrl: string,
-    chaveConvite: string | null
+    chaveConvite: string | null,
+    operationId?: string
   ): Promise<{ isDuplicate: boolean; availableVehicle: any } | null> {
     let isDuplicate = false;
 
@@ -561,8 +570,8 @@ export class WhatsAppWorker {
     }
 
     if (isDuplicate) {
-      console.warn(
-        `[Worker Baileys] ⚠️ Chamado duplicado identificado (${
+      this.logger.warn(
+        `⚠️ Chamado duplicado identificado (${
           chaveConvite ? `ChaveConvite: ${chaveConvite}` : targetUrl
         }). Nenhum veículo adicional será alocado, procedendo com a requisição de aceite.`
       );
@@ -574,13 +583,12 @@ export class WhatsAppWorker {
         message: `Chamado duplicado identificado (${
           chaveConvite ? `ChaveConvite: ${chaveConvite}` : targetUrl
         }). Nenhum veículo adicional alocado.`,
-        details: { url: targetUrl, chaveConvite },
+        details: { url: targetUrl, chaveConvite, operationId },
       });
 
       return { isDuplicate: true, availableVehicle: null };
     }
 
-    // Não é duplicado — verificar capacidade da frota
     const { data: vehicles } = await this.supabase
       .from("vehicles")
       .select("*")
@@ -605,8 +613,8 @@ export class WhatsAppWorker {
     });
 
     if (activeCalls.length >= fleetCapacity) {
-      console.log(
-        `[Worker Baileys] Capacidade máxima da frota atingida (${activeCalls.length}/${fleetCapacity} atendimentos ativos). Ignorando convite.`
+      this.logger.warn(
+        `Capacidade máxima da frota atingida (${activeCalls.length}/${fleetCapacity} atendimentos ativos). Ignorando convite.`
       );
 
       await recordSystemLog(this.supabase, {
@@ -618,6 +626,7 @@ export class WhatsAppWorker {
           url: targetUrl,
           activeCallsCount: activeCalls.length,
           fleetCapacity,
+          operationId,
         },
       });
       return null;
@@ -632,13 +641,11 @@ export class WhatsAppWorker {
     return { isDuplicate: false, availableVehicle };
   }
 
-  /**
-   * Executa o aceite do convite via scraper e registra o resultado no banco.
-   */
   private async executeInviteAcceptance(
     targetUrl: string,
     isDuplicate: boolean,
-    availableVehicle: any
+    availableVehicle: any,
+    operationId?: string
   ): Promise<void> {
     try {
       const result = await this.scraper.processarConvite(targetUrl);
@@ -650,6 +657,7 @@ export class WhatsAppWorker {
         attemptsMade: result.attemptsMade,
         payloadSent: result.payload || null,
         isDuplicate: isDuplicate || undefined,
+        operationId,
       };
 
       await recordCapturedCall(this.supabase, {
@@ -685,92 +693,86 @@ export class WhatsAppWorker {
           isDuplicate,
           statusCode: result.statusCode,
           debugInfo: result.debugInfo,
+          operationId,
         },
       });
     } catch (asyncErr: any) {
-      console.error(
-        `[Worker Baileys] Erro crítico no processamento assíncrono do convite para tenant ${this.tenantId}:`,
-        asyncErr?.message
-      );
+      this.logger.error("Erro crítico no processamento assíncrono do convite:", asyncErr);
       try {
         await recordSystemLog(this.supabase, {
           tenant_id: this.tenantId,
           level: "ERROR",
           event_type: "ASYNC_INVITE_PROCESSING_ERROR",
           message: `Exceção capturada em setImmediate: ${asyncErr?.message}`,
-          details: { url: targetUrl, error: asyncErr?.stack },
+          details: { url: targetUrl, error: asyncErr?.stack, operationId },
         });
       } catch (_) {}
     }
   }
 
-  // ── Lifecycle Control ─────────────────────────────────────────────────
+  // ── Internal Unlocked Methods ──────────────────────────────────────────
 
-  /**
-   * Inicializa o worker do WhatsApp Baileys.
-   */
-  public async start(): Promise<void> {
-    try {
-      if (this.isRunning() || this.state === "STOPPING") {
-        console.log(
-          `[Worker Baileys] Worker já está ativo (Estado: ${this.state}) para tenant ${this.tenantId}. Ignorando chamada de start().`
-        );
-        return;
-      }
-      
-      await this.changeState("STARTING");
-      this.sessionStartTimestamp = Date.now();
-      this.lastMessageReceivedAt = Date.now();
-      this.lastEventAt = Date.now();
-
-      console.log(`[Worker Baileys] Inicializando socket Baileys para tenant ${this.tenantId}...`);
-      await this.provider.start();
-      
-      this.startWatchdog();
-    } catch (err: any) {
-      console.error(`[Worker Baileys] Falha ao iniciar worker: ${err.message}`);
-      await this.changeState("STOPPED");
-      throw err;
+  private async startInternal(operationId?: string, source: string = "INTERNAL"): Promise<void> {
+    if (this.isRunning() || this.state === "STOPPING") {
+      this.logger.worker(
+        "WORKER_START_SKIPPED",
+        `Worker já está ativo (Estado: ${this.state}) para tenant ${this.tenantId}. Ignorando startInternal.`,
+        { operationId, state: this.state }
+      );
+      return;
     }
+
+    await this.changeState("STARTING", null, null, "Starting worker internal", source, operationId);
+    this.sessionStartTimestamp = Date.now();
+    this.lastMessageReceivedAt = Date.now();
+    this.lastEventAt = Date.now();
+
+    this.logger.worker("WORKER_START", `Inicializando socket Baileys para tenant ${this.tenantId}...`, { operationId, source });
+    await (this.provider as BaileysProvider).start(operationId);
+
+    this.startWatchdog();
   }
 
-  /**
-   * Encerra o worker e libera todos os recursos.
-   */
-  public async stop(): Promise<void> {
+  private async stopInternal(operationId?: string, source: string = "INTERNAL"): Promise<void> {
     if (this.state === "STOPPED" || this.state === "STOPPING") {
       return;
     }
 
-    try {
-      await this.changeState("STOPPING");
-      this.stopWatchdog();
-      this.isConnected = false;
+    await this.changeState("STOPPING", null, null, "Stopping worker internal", source, operationId);
+    this.stopWatchdog();
+    this.isConnected = false;
 
-      if (this.reconnectTimer) {
-        clearTimeout(this.reconnectTimer);
-        this.reconnectTimer = null;
-      }
-      if (this.authTimeoutTimer) {
-        clearTimeout(this.authTimeoutTimer);
-        this.authTimeoutTimer = null;
-      }
-
-      if (this.provider) {
-        await this.provider.stop();
-      }
-      await this.changeState("STOPPED");
-    } catch (err: any) {
-      console.error(`[Worker Baileys] Erro ao encerrar worker: ${err.message}`);
-      await this.changeState("STOPPED");
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
+    if (this.authTimeoutTimer) {
+      clearTimeout(this.authTimeoutTimer);
+      this.authTimeoutTimer = null;
+    }
+
+    if (this.provider) {
+      await this.provider.stop();
+    }
+    await this.changeState("STOPPED", null, null, "Worker stopped internal", source, operationId);
+  }
+
+  // ── Lifecycle Control ─────────────────────────────────────────────────
+
+  public async start(operationId?: string, source: string = "EXTERNAL"): Promise<void> {
+    return this.actionLock.runExclusive(async () => {
+      await this.startInternal(operationId, source);
+    });
+  }
+
+  public async stop(operationId?: string, source: string = "EXTERNAL"): Promise<void> {
+    return this.actionLock.runExclusive(async () => {
+      await this.stopInternal(operationId, source);
+    });
   }
 
   // ── Observability ─────────────────────────────────────────────────────
 
-  /**
-   * Métricas de Observabilidade do Worker.
-   */
   public getMetrics(): WorkerMetrics {
     const now = Date.now();
     const mem = process.memoryUsage();

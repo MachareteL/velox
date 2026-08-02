@@ -2,6 +2,7 @@ import axios, { AxiosInstance } from 'axios';
 import * as cheerio from 'cheerio';
 import type { AcceptPayload } from '@velox/types';
 import { calcularPrevia } from './calculator';
+import { WorkerLogger, LoggerFactory } from './logger';
 
 export interface ScraperDebugInfo {
   failedStep?: 'HTTP_GET' | 'HTML_PARSING' | 'FORM_EXTRACTION' | 'HTTP_POST';
@@ -46,8 +47,10 @@ export class NonRetryableError extends Error {
 
 export class VeloxScraper {
   private http: AxiosInstance;
+  private logger: WorkerLogger;
 
-  constructor(timeoutMs = 5000) {
+  constructor(timeoutMs = 5000, logger?: WorkerLogger) {
+    this.logger = logger || LoggerFactory.forOrchestrator();
     this.http = axios.create({
       timeout: timeoutMs,
       maxRedirects: 5,
@@ -66,7 +69,7 @@ export class VeloxScraper {
   /**
    * Processa a URL de convite do Velox realizando GET e POST com cronometragem em milissegundos por etapa
    */
-  public async processarConvite(url: string, maxAttempts = 2): Promise<ScraperResult> {
+  public async processarConvite(url: string, maxAttempts = 2, operationId?: string): Promise<ScraperResult> {
     const startTime = Date.now();
     let lastError: any = null;
     let attemptsMade = 0;
@@ -81,16 +84,14 @@ export class VeloxScraper {
       let tPost = 0;
 
       try {
-        console.log(`\n================================================================================`);
-        console.log(`[Scraper] 📥 [Tentativa ${attempt}/${maxAttempts}] Iniciando processamento do convite Velox`);
-        console.log(`[Scraper] 🔗 URL: ${url}`);
+        this.logger.info(`[Scraper] 📥 [Tentativa ${attempt}/${maxAttempts}] Iniciando processamento do convite Velox`, { url, operationId });
 
         // -------------------------------------------------------------
         // ETAPA 1: HTTP GET
         // -------------------------------------------------------------
         debugInfo.failedStep = 'HTTP_GET';
         const startGet = Date.now();
-        console.log(`[Scraper] 🌐 [Etapa 1/3] Disparando HTTP GET para a página de convite...`);
+        this.logger.debug(`[Scraper] 🌐 [Etapa 1/3] Disparando HTTP GET para a página de convite...`);
 
         const responseGet = await this.http.get<string>(url);
         tGet = Date.now() - startGet;
@@ -98,11 +99,11 @@ export class VeloxScraper {
         const finalUrl = responseGet.request?.res?.responseUrl || url;
         debugInfo.getStatusCode = responseGet.status;
         debugInfo.getFinalUrl = finalUrl;
-        
+
         const htmlData = typeof responseGet.data === 'string' ? responseGet.data : String(responseGet.data || '');
         debugInfo.rawHtmlSnippet = htmlData.slice(0, 1500);
 
-        console.log(`[Scraper] ⏱️ [Etapa 1/3 Concluída em ${tGet}ms] HTTP Status: ${responseGet.status} ${responseGet.statusText} | URL Final: ${finalUrl}`);
+        this.logger.info(`[Scraper] ⏱️ [Etapa 1/3 Concluída em ${tGet}ms] HTTP Status: ${responseGet.status} ${responseGet.statusText}`, { finalUrl });
 
         if (responseGet.status < 200 || responseGet.status >= 300) {
           throw new Error(
@@ -115,7 +116,7 @@ export class VeloxScraper {
         // -------------------------------------------------------------
         debugInfo.failedStep = 'HTML_PARSING';
         const startParse = Date.now();
-        console.log(`[Scraper] 🔍 [Etapa 2/3] Analisando estrutura HTML e buscando campos do formulário...`);
+        this.logger.debug(`[Scraper] 🔍 [Etapa 2/3] Analisando estrutura HTML e buscando campos do formulário...`);
 
         const $ = cheerio.load(htmlData);
         const pageTitle = $('title').text().trim() || 'Sem Título';
@@ -126,15 +127,15 @@ export class VeloxScraper {
 
         // CHECAGEM ESTRITA NO GET: Se o HTML contiver avisos explícitos de recusa/já aceito, cancela imediatamente!
         if (bodyText.includes('Convite já aceito por outro prestador') || bodyText.includes('ja aceito por outro prestador')) {
-          console.warn(`[Scraper] 🛑 Velox informou no HTML GET: "Convite já aceito por outro prestador"`);
+          this.logger.warn(`[Scraper] 🛑 Velox informou no HTML GET: "Convite já aceito por outro prestador"`);
           throw new NonRetryableError('Convite já aceito por outro prestador!');
         }
         if (bodyText.includes('Convite expirado') || bodyText.includes('Convite encerrado') || bodyText.includes('Convite cancelado')) {
-          console.warn(`[Scraper] 🛑 Velox informou no HTML GET: "Convite indisponível/encerrado/cancelado"`);
+          this.logger.warn(`[Scraper] 🛑 Velox informou no HTML GET: "Convite indisponível/encerrado/cancelado"`);
           throw new NonRetryableError(`Convite indisponível no Velox (${pageTitle}): ${bodyText.slice(0, 150)}`);
         }
         if (bodyText.includes('Login') && (bodyText.includes('Senha') || bodyText.includes('Entrar')) && !bodyText.includes('VisualizarConvite')) {
-          console.warn(`[Scraper] 🛑 Velox redirecionou para tela de Login`);
+          this.logger.warn(`[Scraper] 🛑 Velox redirecionou para tela de Login`);
           throw new NonRetryableError(`Página de convite redirecionou para Login do Velox (Autenticação exigida). Título: ${pageTitle}`);
         }
 
@@ -150,7 +151,6 @@ export class VeloxScraper {
         });
         debugInfo.allInputsFound = allInputs;
 
-        // Busca insensível a maiúsculas/minúsculas
         const getValue = (candidateKeys: string[]): string => {
           for (const key of candidateKeys) {
             if (allInputs[key] !== undefined && allInputs[key] !== '') {
@@ -173,7 +173,6 @@ export class VeloxScraper {
         let idCidadeAtendimento = getValue(['IdCidadeAtendimento', 'idCidadeAtendimento']);
         let distanciaBaseOrigem = getValue(['DistanciaBaseOrigem', 'distanciaBaseOrigem']) || '0';
 
-        // Extração via tags <script> (const json = {...})
         let scriptJson: Record<string, any> | null = null;
         $('script').each((_, element) => {
           const scriptText = $(element).html() || '';
@@ -199,7 +198,6 @@ export class VeloxScraper {
         });
         debugInfo.scriptJsonFound = scriptJson;
 
-        // Fallback de extração da ChaveConvite via URL Query String
         let chaveConvite = '';
         try {
           const parsedUrl = new URL(url);
@@ -208,7 +206,6 @@ export class VeloxScraper {
           // Ignore
         }
 
-        // Validação: exige Id numérico ou ChaveConvite
         if (!id && !chaveConvite) {
           if ($('.text-danger').length > 0) {
             const dangerMsg = $('.text-danger').text().trim();
@@ -222,7 +219,6 @@ export class VeloxScraper {
           );
         }
 
-        // Determina URL de ação do POST
         const actionAttr = $('#VisualizarConvite').attr('action') || $('form').attr('action');
         let actionUrl = url;
         if (actionAttr) {
@@ -235,11 +231,7 @@ export class VeloxScraper {
         const distanciaNum = parseInt(distanciaBaseOrigem.replace(/\D/g, ''), 10) || 0;
         const valorPrevia = calcularPrevia(distanciaNum);
 
-        console.log(`[Scraper] 📦 [Etapa 2/3 Concluída em ${tParse}ms] Dados do Convite Extraídos:`);
-        console.log(`          • ID Oferta: "${id}" | Chave URL: "${chaveConvite}"`);
-        console.log(`          • Distância Informada: ${distanciaNum} km`);
-        console.log(`          • Prévia Calculada: ${valorPrevia} min`);
-        console.log(`          • URL de Aceite (POST): ${actionUrl}`);
+        this.logger.info(`[Scraper] 📦 [Etapa 2/3 Concluída em ${tParse}ms] ID Oferta: "${id}" | Distância: ${distanciaNum}km | Prévia: ${valorPrevia}min`, { actionUrl });
 
         // -------------------------------------------------------------
         // ETAPA 3: HTTP POST DE ACEITE
@@ -257,7 +249,7 @@ export class VeloxScraper {
           IdCidadeAtendimento: idCidadeAtendimento,
         };
 
-        console.log(`[Scraper] 🚀 [Etapa 3/3] Enviando HTTP POST de aceite com payload:`, JSON.stringify(payload));
+        this.logger.info(`[Scraper] 🚀 [Etapa 3/3] Enviando HTTP POST de aceite com payload:`, { payload });
 
         const responsePost = await this.http.post(actionUrl, payload, {
           headers: {
@@ -278,7 +270,6 @@ export class VeloxScraper {
           totalMs,
         };
 
-        // ANALISA A RESPOSTA DO POST: Se o servidor Velox respondeu que já foi aceito ou encerrado no POST
         const postResponseBody = typeof responsePost.data === 'string'
           ? responsePost.data
           : JSON.stringify(responsePost.data || '');
@@ -292,19 +283,18 @@ export class VeloxScraper {
           lowerPostBody.includes('outro prestador');
 
         if (isPostAlreadyTakenOrExpired) {
-          console.warn(`[Scraper] 🛑 Velox respondeu no HTTP POST que o convite já foi aceito por outro prestador! Resposta: "${postResponseBody.slice(0, 200)}"`);
+          this.logger.warn(`[Scraper] 🛑 Velox respondeu no HTTP POST que o convite já foi aceito por outro prestador! Resposta: "${postResponseBody.slice(0, 200)}"`);
           throw new NonRetryableError('Convite já aceito por outro prestador!');
         }
 
         const isSuccess = responsePost.status >= 200 && responsePost.status < 300;
 
-        console.log(`[Scraper] ⏱️ [Etapa 3/3 Concluída em ${tPost}ms] Resposta HTTP POST: Status ${responsePost.status} ${responsePost.statusText}`);
+        this.logger.info(`[Scraper] ⏱️ [Etapa 3/3 Concluída em ${tPost}ms] Resposta HTTP POST: Status ${responsePost.status}`);
         if (isSuccess) {
-          console.log(`[Scraper] 🎉 [SUCESSO TOTAL em ${totalMs}ms] CONVITE ACEITO COM SUCESSO! (GET: ${tGet}ms | Parse: ${tParse}ms | POST: ${tPost}ms)`);
+          this.logger.info(`[Scraper] 🎉 [SUCESSO TOTAL em ${totalMs}ms] CONVITE ACEITO COM SUCESSO!`);
         } else {
-          console.warn(`[Scraper] ⚠️ HTTP POST retornou status de falha: ${responsePost.status}`);
+          this.logger.warn(`[Scraper] ⚠️ HTTP POST retornou status de falha: ${responsePost.status}`);
         }
-        console.log(`================================================================================\n`);
 
         return {
           success: isSuccess,
@@ -335,24 +325,17 @@ export class VeloxScraper {
           totalMs: elapsedAttemptMs,
         };
 
-        console.error(`[Scraper] ❌ [FALHA na Etapa: ${debugInfo.failedStep}] (${elapsedAttemptMs}ms decorridos)`);
-        console.error(`          • Mensagem: ${error.message}`);
-        if (debugInfo.pageTitle) console.error(`          • Título da Página: "${debugInfo.pageTitle}"`);
-        if (debugInfo.getStatusCode) console.error(`          • HTTP GET Status: ${debugInfo.getStatusCode}`);
+        this.logger.error(`[Scraper] ❌ [FALHA na Etapa: ${debugInfo.failedStep}] (${elapsedAttemptMs}ms decorridos): ${error.message}`, error);
 
         if (error instanceof NonRetryableError || (error.message && error.message.includes('já aceito'))) {
-          console.log(`[Scraper] 🛑 CANCELADO SEM RETRY: ${error.message}`);
-          if (debugInfo.pageTitle) console.log(`          • Título da Página: "${debugInfo.pageTitle}"`);
-          if (debugInfo.bodyTextSnippet) console.log(`          • Trecho do HTML lido: "${debugInfo.bodyTextSnippet.slice(0, 250)}"`);
-          console.log(`================================================================================\n`);
+          this.logger.warn(`[Scraper] 🛑 CANCELADO SEM RETRY: ${error.message}`);
           break;
         }
 
         if (attempt < maxAttempts) {
-          console.warn(`[Scraper] 🔄 Erro temporário na tentativa ${attempt}. Aguardando 300ms para re-tentar...`);
+          this.logger.info(`[Scraper] 🔄 Erro temporário na tentativa ${attempt}. Aguardando 300ms para re-tentar...`);
           await new Promise((r) => setTimeout(r, 300));
         }
-        console.log(`================================================================================\n`);
       }
     }
 

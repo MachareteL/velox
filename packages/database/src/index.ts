@@ -53,8 +53,7 @@ export async function updateSessionStatus(
     .maybeSingle();
 
   if (error) {
-    console.error('Erro ao atualizar whatsapp_session:', error.message);
-    return null;
+    throw new Error(`[Database Error] Falha ao atualizar whatsapp_session: ${error.message}`);
   }
 
   return data as WhatsAppSession;
@@ -80,8 +79,7 @@ export async function requestPhonePairingCode(
     .maybeSingle();
 
   if (error) {
-    console.error('Erro ao solicitar pairing_code:', error.message);
-    return null;
+    throw new Error(`[Database Error] Falha ao solicitar pairing_code: ${error.message}`);
   }
 
   return data as WhatsAppSession;
@@ -103,8 +101,7 @@ export async function toggleAutomationState(
     .maybeSingle();
 
   if (error) {
-    console.error('Erro ao alterar estado da automação:', error.message);
-    return null;
+    throw new Error(`[Database Error] Falha ao alterar estado da automação: ${error.message}`);
   }
 
   return data as WhatsAppSession;
@@ -124,8 +121,7 @@ export async function completeCapturedCall(
     .maybeSingle();
 
   if (error) {
-    console.error('Erro ao finalizar chamado:', error.message);
-    return null;
+    throw new Error(`[Database Error] Falha ao finalizar chamado: ${error.message}`);
   }
 
   return data as CapturedCall;
@@ -142,8 +138,7 @@ export async function recordCapturedCall(
     .single();
 
   if (error) {
-    console.error('Erro ao registrar captured_call:', error.message);
-    return null;
+    throw new Error(`[Database Error] Falha ao registrar captured_call: ${error.message}`);
   }
 
   return data as CapturedCall;
@@ -166,8 +161,7 @@ export async function recordSystemLog(
     .single();
 
   if (error) {
-    console.error('Erro ao registrar system_log:', error.message);
-    return null;
+    throw new Error(`[Database Error] Falha ao registrar system_log: ${error.message}`);
   }
 
   return data as SystemLog;
