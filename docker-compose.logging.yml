@@ -1,12 +1,10 @@
-version: '3.8'
-
 services:
   loki:
     image: grafana/loki:3.0.0
     container_name: velox-loki
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3100:3100" # Exposto apenas para o localhost
+      - "127.0.0.1:3100:3100"
     volumes:
       - ./loki-config.yml:/etc/loki/loki-config.yml:ro
       - loki-data:/tmp/loki
@@ -34,12 +32,11 @@ services:
     container_name: velox-grafana
     restart: unless-stopped
     ports:
-      - "3000:3000" # Porta visual do Grafana (protegida via Firewall UFW / Oracle Security List)
+      - "3000:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=VeloxLogsSecurity2026! # Altere esta senha em produção
+      - GF_SECURITY_ADMIN_PASSWORD=VeloxLogsSecurity2026!
       - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s:%(port)s/
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro

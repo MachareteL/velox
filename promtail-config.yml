@@ -17,6 +17,20 @@ scrape_configs:
           app: velox-worker
           environment: production
           __path__: /app/logs/*.log
+    pipeline_stages:
+      - json:
+          expressions:
+            level: level
+            category: category
+            event: event
+            tenantId: tenantId
+            sessionId: sessionId
+            operationId: operationId
+            socketId: socketId
+            time: time
+            msg: msg
+      - labels:
+          level:
 
   - job_name: pm2-default-logs
     static_configs:
@@ -26,18 +40,17 @@ scrape_configs:
           app: velox-worker
           environment: production
           __path__: /root/.pm2/logs/velox-worker-*.log
-
-pipeline_stages:
-  - json:
-      expressions:
-        level: level
-        category: category
-        event: event
-        tenantId: tenantId
-        sessionId: sessionId
-        operationId: operationId
-        socketId: socketId
-        time: time
-        msg: msg
-  - labels:
-      level:
+    pipeline_stages:
+      - json:
+          expressions:
+            level: level
+            category: category
+            event: event
+            tenantId: tenantId
+            sessionId: sessionId
+            operationId: operationId
+            socketId: socketId
+            time: time
+            msg: msg
+      - labels:
+          level:
