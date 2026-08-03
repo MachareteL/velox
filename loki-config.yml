@@ -5,7 +5,6 @@ server:
   grpc_listen_port: 9096
 
 common:
-  instance_addr: 127.0.0.1
   path_prefix: /tmp/loki
   storage:
     filesystem:
@@ -35,6 +34,4 @@ compactor:
   working_directory: /tmp/loki/compactor
   compaction_interval: 10m
   retention_enabled: true
-  retention_delete_delay: 2h
-  retention_delete_worker_count: 150
   delete_request_store: filesystem
