@@ -8,6 +8,7 @@ module.exports = {
       error_file: './logs/velox-worker-error.log',
       merge_logs: true,
       env: {
+        NODE_ENV: 'production',
         TZ: 'America/Sao_Paulo',
         SYSTEMD_IGNORE_CHROOT: '1',
         DBUS_SESSION_BUS_ADDRESS: '/dev/null',
