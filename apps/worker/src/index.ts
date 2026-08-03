@@ -276,8 +276,25 @@ async function main() {
 
           const existingWorker = activeWorkers.get(session.tenant_id);
 
-          // PREVENÇÃO DE LOOP DE FEEDBACK DO REALTIME:
-          // Se o evento é um reflexo de uma alteração do próprio Worker, ignora a re-inicialização!
+          // 1. CHECAGEM DE DESATIVAÇÃO (PAUSA): Executada sob o Mutex exclusivo do Tenant
+          if (session.is_active === false) {
+            const mutex = getTenantMutex(session.tenant_id);
+            await mutex.runExclusive(async () => {
+              const currentWorker = activeWorkers.get(session.tenant_id);
+              rootLogger.worker(
+                "REALTIME_EVENT_PROCESSED",
+                `Automação desativada pelo prestador [tenant: ${session.tenant_id}]. Pausando escuta...`,
+                { operationId: eventOpId, tenantId: session.tenant_id, reason: "AUTOMATION_PAUSED" }
+              );
+              if (currentWorker) {
+                currentWorker.setIsActive(false);
+              }
+            });
+            return;
+          }
+
+          // 2. PREVENÇÃO DE LOOP DE FEEDBACK DO REALTIME:
+          // Se o evento é um reflexo de uma alteração do próprio Worker e não houve alteração no estado is_active, ignora!
           if (existingWorker) {
             const currentState = existingWorker.getWorkerState();
             const isMatch =
@@ -286,7 +303,9 @@ async function main() {
                 (currentState === "STARTING" || currentState === "CONNECTING" || currentState === "RECONNECTING")) ||
               (session.status === "DISCONNECTED_NEED_QR" && currentState === "NEED_QR");
 
-            if (isMatch) {
+            const isActiveChanged = payload.old && payload.old.is_active !== session.is_active;
+
+            if (isMatch && !isActiveChanged) {
               rootLogger.worker(
                 "REALTIME_EVENT_IGNORED",
                 `Evento do Realtime ignorado (Feedback Loop prevenido) [tenant: ${session.tenant_id}] (Status DB: ${session.status}, Estado Worker: ${currentState})`,
@@ -294,18 +313,6 @@ async function main() {
               );
               return;
             }
-          }
-
-          if (session.is_active === false) {
-            rootLogger.worker(
-              "REALTIME_EVENT_IGNORED",
-              `Automação desativada pelo prestador [tenant: ${session.tenant_id}]. Pausando escuta...`,
-              { operationId: eventOpId, tenantId: session.tenant_id, reason: "AUTOMATION_PAUSED" }
-            );
-            if (existingWorker) {
-              existingWorker.setIsActive(false);
-            }
-            return;
           }
 
           if (
