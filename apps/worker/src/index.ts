@@ -185,31 +185,32 @@ async function main() {
     });
   };
 
-  // 1. Carrega todas as sessões com is_active = true no boot
+  // 1. Carrega todas as sessões cadastradas no boot (mesmo pausadas, para manter o socket conectado)
   const bootOpId = crypto.randomUUID();
-  const { data: activeSessions, error: bootErr } = await supabase
+  const { data: allSessions, error: bootErr } = await supabase
     .from("whatsapp_sessions")
-    .select("*")
-    .eq("is_active", true);
+    .select("*");
 
   if (bootErr) {
     rootLogger.error("[Orchestrator] Erro ao carregar sessões no boot:", bootErr);
   }
 
-  if (activeSessions && activeSessions.length > 0) {
-    rootLogger.info(`[Orchestrator] 🚀 Verificando ${activeSessions.length} sessões ativas no boot...`, {
+  if (allSessions && allSessions.length > 0) {
+    rootLogger.info(`[Orchestrator] 🚀 Verificando ${allSessions.length} sessões cadastradas no boot...`, {
       operationId: bootOpId,
     });
     const authDataPath = getBaileysAuthDataPath();
 
-    for (const session of activeSessions) {
+    for (const session of allSessions) {
       const sessionDir = path.join(authDataPath, `session-tenant_${session.tenant_id}`);
       const hasSessionDir = fs.existsSync(sessionDir);
 
       if (session.status === "CONNECTED" || hasSessionDir) {
         const sessionOpId = crypto.randomUUID();
         rootLogger.info(
-          `[Orchestrator] Inicializando robô Baileys para tenant ${session.tenant_id} (Status DB: ${session.status}, Pasta em Disco: ${hasSessionDir})...`,
+          `[Orchestrator] Inicializando robô Baileys para tenant ${session.tenant_id} (Status DB: ${session.status}, Automação: ${
+            session.is_active !== false ? "LIGADA" : "PAUSADA"
+          }, Pasta em Disco: ${hasSessionDir})...`,
           { operationId: sessionOpId }
         );
         startWorkerForTenant(
@@ -225,7 +226,7 @@ async function main() {
       }
     }
   } else {
-    rootLogger.info("[Orchestrator] Nenhum WhatsApp ativo previamente. Aguardando solicitações no banco...");
+    rootLogger.info("[Orchestrator] Nenhum WhatsApp encontrado no banco. Aguardando solicitações...");
   }
 
   // 2. Escuta global de alterações na tabela whatsapp_sessions para todos os tenants
@@ -283,11 +284,24 @@ async function main() {
               const currentWorker = activeWorkers.get(session.tenant_id);
               rootLogger.worker(
                 "REALTIME_EVENT_PROCESSED",
-                `Automação desativada pelo prestador [tenant: ${session.tenant_id}]. Pausando escuta...`,
+                `Automação desativada pelo prestador [tenant: ${session.tenant_id}]. Mantendo socket em modo PAUSADO...`,
                 { operationId: eventOpId, tenantId: session.tenant_id, reason: "AUTOMATION_PAUSED" }
               );
               if (currentWorker) {
                 currentWorker.setIsActive(false);
+              } else {
+                const authDataPath = getBaileysAuthDataPath();
+                const sessionDir = path.join(authDataPath, `session-tenant_${session.tenant_id}`);
+                const hasSessionDir = fs.existsSync(sessionDir);
+                if (session.status === "CONNECTED" || hasSessionDir) {
+                  await startWorkerForTenant(
+                    session.tenant_id,
+                    session.id,
+                    false,
+                    session.phone_number,
+                    eventOpId
+                  );
+                }
               }
             });
             return;
@@ -379,6 +393,19 @@ async function main() {
                 `[Orchestrator] Status DISCONNECTED recebido para tenant ${session.tenant_id}, mas mantendo worker rodando por possuir pasta em disco.`,
                 { operationId: eventOpId }
               );
+              if (!existingWorker || !existingWorker.isRunning()) {
+                rootLogger.info(
+                  `[Orchestrator] Iniciando worker para tenant ${session.tenant_id} a partir das credenciais salvas em disco...`,
+                  { operationId: eventOpId }
+                );
+                await startWorkerForTenant(
+                  session.tenant_id,
+                  session.id,
+                  true,
+                  session.phone_number,
+                  eventOpId
+                );
+              }
             }
           }
         }
