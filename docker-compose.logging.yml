@@ -2,6 +2,7 @@ services:
   loki:
     image: grafana/loki:3.0.0
     container_name: velox-loki
+    user: "0:0" # Força permissões de escrita no volume Docker /tmp/loki
     restart: unless-stopped
     ports:
       - "127.0.0.1:3100:3100"
@@ -17,6 +18,7 @@ services:
   promtail:
     image: grafana/promtail:3.0.0
     container_name: velox-promtail
+    user: "0:0" # Força permissões de leitura nos logs do PM2 no Host
     restart: unless-stopped
     volumes:
       - ./promtail-config.yml:/etc/promtail/promtail-config.yml:ro
