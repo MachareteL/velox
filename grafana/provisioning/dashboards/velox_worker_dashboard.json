@@ -20,7 +20,7 @@
         {
           "datasource": "Loki",
           "editorMode": "code",
-          "expr": "sum by (level) (count_over_time({app=\"velox-worker\"} | json | level=~\"$level\" | tenantId=~\"$tenantId\" | sessionId=~\"$sessionId\" | operationId=~\"$operationId\" | socketId=~\"$socketId\" | category=~\"$category\" | event=~\"$event\" [$__interval]))",
+          "expr": "sum by (level) (count_over_time({app=\"velox-worker\"} [$__interval]))",
           "queryType": "range",
           "refId": "A"
         }
@@ -37,7 +37,7 @@
         {
           "datasource": "Loki",
           "editorMode": "code",
-          "expr": "{app=\"velox-worker\"} | json | level=~\"$level\" | tenantId=~\"$tenantId\" | sessionId=~\"$sessionId\" | operationId=~\"$operationId\" | socketId=~\"$socketId\" | category=~\"$category\" | event=~\"$event\" |~ \"(?i)$search\"",
+          "expr": "{app=\"velox-worker\"} | json |~ \"(?i)$search\"",
           "queryType": "range",
           "refId": "A"
         }
