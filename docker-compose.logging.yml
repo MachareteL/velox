@@ -10,7 +10,9 @@ services:
       - loki-data:/tmp/loki
     command: -config.file=/etc/loki/loki-config.yml
     networks:
-      - logging-network
+      logging-network:
+        aliases:
+          - loki
 
   promtail:
     image: grafana/promtail:3.0.0
