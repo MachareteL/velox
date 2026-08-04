@@ -199,8 +199,10 @@ export class WhatsAppWorker {
 
     // Mapeamento para o status esperado no BD
     let dbStatus: any = "DISCONNECTED";
-    if (newState === "STARTING" || newState === "CONNECTING" || newState === "RECONNECTING")
+    if (newState === "STARTING" || newState === "CONNECTING")
       dbStatus = "AUTHENTICATING";
+    else if (newState === "RECONNECTING")
+      dbStatus = previousState === "CONNECTED" || previousState === "RECONNECTING" ? "CONNECTED" : "AUTHENTICATING";
     else if (newState === "CONNECTED") dbStatus = "CONNECTED";
     else if (newState === "NEED_QR") dbStatus = "DISCONNECTED_NEED_QR";
     else if (

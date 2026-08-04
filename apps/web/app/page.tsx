@@ -110,6 +110,21 @@ export default function DashboardPage() {
     fetchCalls();
     fetchLogs();
 
+    // 2. Re-busca o estado da sessão ao focar/retornar à aba do navegador (Auto-Healing)
+    const handleFocusOrVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        fetchInitialSession();
+        fetchCalls();
+      }
+    };
+    window.addEventListener('focus', handleFocusOrVisibility);
+    document.addEventListener('visibilitychange', handleFocusOrVisibility);
+
+    // 3. Polling defensivo leve a cada 30s para garantir sincronia caso o Realtime caia
+    const pollInterval = setInterval(() => {
+      fetchInitialSession();
+    }, 30000);
+
     // 4. Inscreve em atualizações em Tempo Real filtradas pelo tenant_id
     const channel = supabase
       .channel(`dashboard-${tenantId}`)
@@ -192,6 +207,9 @@ export default function DashboardPage() {
       .subscribe();
 
     return () => {
+      window.removeEventListener('focus', handleFocusOrVisibility);
+      document.removeEventListener('visibilitychange', handleFocusOrVisibility);
+      clearInterval(pollInterval);
       supabase.removeChannel(channel);
     };
   }, [user, fetchVehicles, fetchCalls, fetchLogs]);

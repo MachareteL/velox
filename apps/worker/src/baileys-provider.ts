@@ -99,16 +99,16 @@ export class BaileysProvider implements WhatsAppProvider {
         sockToClose.ev.removeAllListeners("messages.upsert");
         sockToClose.end(undefined);
 
-        // Fallback defensivo: se a conexão TCP não fechar em 3s, força ws.terminate()
+        // Força encerramento imediato do WebSocket para evitar acúmulo/conflito de sockets ativos
         const ws = (sockToClose as any).ws;
-        if (ws && typeof ws.terminate === "function") {
-          setTimeout(() => {
-            try {
-              if (ws.readyState !== 3 /* CLOSED */) {
-                ws.terminate();
-              }
-            } catch (_) {}
-          }, 3000);
+        if (ws) {
+          try {
+            if (typeof ws.terminate === "function") {
+              ws.terminate();
+            } else if (typeof ws.close === "function") {
+              ws.close();
+            }
+          } catch (_) {}
         }
       } catch (_) {}
     }
@@ -195,7 +195,6 @@ export class BaileysProvider implements WhatsAppProvider {
       } else if (connection === "open") {
         this.connectionState = "CONNECTED";
         this.logger.socket("SOCKET_CONNECTED", `Socket Baileys CONECTADO com sucesso para tenant ${this.tenantId}`);
-        this.emitter.emit("authenticated");
         this.emitter.emit("ready");
       } else if (connection === "close") {
         this.connectionState = "DISCONNECTED";
@@ -299,7 +298,8 @@ export class BaileysProvider implements WhatsAppProvider {
     this.disconnectSocket();
     this.isExplicitStop = false;
     this.connectionState = "DISCONNECTED";
-    await new Promise((res) => setTimeout(res, 2000));
+    // Aguarda encerramento completo do socket antigo no nível do SO/TCP
+    await new Promise((res) => setTimeout(res, 3500));
     await this.start(operationId);
   }
 
