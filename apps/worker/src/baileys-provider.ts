@@ -72,6 +72,8 @@ export class BaileysProvider implements WhatsAppProvider {
   private sessionDir: string;
   private msgRetryCounterCache = createInMemoryCacheStore();
 
+  private messageStore = createInMemoryCacheStore(5000);
+
   private socketId: string | null = null;
   private logger: WorkerLogger;
 
@@ -111,6 +113,16 @@ export class BaileysProvider implements WhatsAppProvider {
           } catch (_) {}
         }
       } catch (_) {}
+    }
+  }
+
+  public async sendPing(): Promise<boolean> {
+    if (!this.socket || this.connectionState !== "CONNECTED") return false;
+    try {
+      await this.socket.sendPresenceUpdate("available");
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -161,11 +173,18 @@ export class BaileysProvider implements WhatsAppProvider {
       browser: ["Velox SaaS Worker", "Chrome", "120.0.0.0"],
       generateHighQualityLinkPreview: false,
       syncFullHistory: false,
-      shouldSyncHistoryMessage: () => false,
+      shouldSyncHistoryMessage: () => true, // Permite ler mensagens recentes enviadas durante breves desconexões
       markOnlineOnConnect: true,
+      connectTimeoutMs: 60000,
+      keepAliveIntervalMs: 25000,
       retryRequestDelayMs: 500,
       msgRetryCounterCache: this.msgRetryCounterCache as any,
-      getMessage: async () => undefined,
+      getMessage: async (key) => {
+        if (!key.id) return undefined;
+        const storeKey = `${key.remoteJid || ""}:${key.id}`;
+        const stored = this.messageStore.get<any>(storeKey);
+        return stored ? stored.message : undefined;
+      },
     });
 
     this.socket = sock;
@@ -234,11 +253,11 @@ export class BaileysProvider implements WhatsAppProvider {
     });
 
     // Escuta de mensagens em tempo real
-    sock.ev.on("messages.upsert", (upsert) => {
+    sock.ev.on("messages.upsert", async (upsert) => {
       if (upsert.type !== "notify" && upsert.type !== "append") return;
 
       for (const msg of upsert.messages) {
-        if (!msg.message || msg.key.fromMe) continue;
+        if (!msg.message) continue;
 
         const sender = msg.key.remoteJid || "";
 
@@ -250,6 +269,20 @@ export class BaileysProvider implements WhatsAppProvider {
           continue;
         }
 
+        // Armazena a mensagem na store para permitir retentativas de descriptografia (getMessage)
+        if (msg.key.id) {
+          const storeKey = `${sender}:${msg.key.id}`;
+          this.messageStore.set(storeKey, { key: msg.key, message: msg.message });
+        }
+
+        // Ignorar mensagens enviadas pelo próprio bot no que tange a escuta de convites
+        if (msg.key.fromMe) continue;
+
+        // Envia imediatamente a confirmação de leitura (Read Receipt) para o WhatsApp
+        if (msg.key.id) {
+          sock.readMessages([msg.key]).catch(() => {});
+        }
+
         let innerMessage = msg.message;
         if (innerMessage.ephemeralMessage) {
           innerMessage = innerMessage.ephemeralMessage.message!;
@@ -257,6 +290,10 @@ export class BaileysProvider implements WhatsAppProvider {
           innerMessage = innerMessage.viewOnceMessage.message!;
         } else if (innerMessage.viewOnceMessageV2) {
           innerMessage = innerMessage.viewOnceMessageV2.message!;
+        } else if (innerMessage.documentWithCaptionMessage) {
+          innerMessage = innerMessage.documentWithCaptionMessage.message!;
+        } else if (innerMessage.protocolMessage?.editedMessage) {
+          innerMessage = innerMessage.protocolMessage.editedMessage;
         }
 
         const body =
@@ -266,6 +303,7 @@ export class BaileysProvider implements WhatsAppProvider {
           innerMessage.videoMessage?.caption ||
           innerMessage.buttonsResponseMessage?.selectedButtonId ||
           innerMessage.listResponseMessage?.singleSelectReply?.selectedRowId ||
+          innerMessage.templateButtonReplyMessage?.selectedId ||
           "";
 
         if (!body) continue;

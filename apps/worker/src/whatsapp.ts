@@ -234,16 +234,21 @@ export class WhatsAppWorker {
     this.watchdogTimer = setInterval(async () => {
       if (this.state === "CONNECTED") {
         const isOpen = this.provider?.isSocketOpen();
-        if (!isOpen) {
+        let pingOk = false;
+        if (isOpen && typeof this.provider.sendPing === "function") {
+          pingOk = await this.provider.sendPing();
+        }
+
+        if (!isOpen || !pingOk) {
           this.logger.watchdog(
             "GHOST_SESSION_DETECTED",
-            `Sessão fantasma detectada (Worker CONNECTED mas transporte TCP/WebSocket morto) para tenant ${this.tenantId}.`
+            `Sessão fantasma detectada (Worker CONNECTED mas Ping de aplicação falhou) para tenant ${this.tenantId}.`
           );
-          await this.changeState("DEGRADED", null, null, "Ghost Session Detected", "WATCHDOG");
+          await this.changeState("DEGRADED", null, null, "Ghost Session / Ping Failed", "WATCHDOG");
           await this.handleDisconnected("Watchdog Ghost Session Detected", false, undefined, undefined, "WATCHDOG");
         }
       }
-    }, 30000);
+    }, 15000);
   }
 
   private stopWatchdog(): void {
