@@ -109,7 +109,7 @@ export class WhatsAppWorker {
   ) {
     this.logger = logger || LoggerFactory.forTenant(this.tenantId, this.sessionId);
     const defaultPattern =
-      "https:\\/\\/prestador\\.veloxcontactcenter\\.com\\.br\\/prestador\\/ConvitePrestador\\/VisualizarConvite\\?ChaveConvite=[a-f0-9\\-]+";
+      "https?:\\/\\/(?:[a-z0-9\\-]+\\.)*veloxcontactcenter\\.com\\.br\\/[^\\s\"'>]*ChaveConvite=[a-f0-9\\-]+";
     this.inviteRegex = new RegExp(
       targetRegexPattern || process.env.TARGET_REGEX || defaultPattern,
       "i"
@@ -522,13 +522,35 @@ export class WhatsAppWorker {
   // ── Message Processing Pipeline ───────────────────────────────────────
 
   private async handleIncomingMessage(msg: IncomingMessagePayload, operationId?: string): Promise<void> {
-    if (!msg || !msg.body) return;
+    if (!msg || !msg.body) {
+      this.logger.debug(`[WhatsAppWorker] handleIncomingMessage chamado com payload nulo ou sem body`);
+      return;
+    }
 
     this.lastEventAt = Date.now();
     this.lastMessageReceivedAt = Date.now();
 
+    this.logger.info(`[WhatsAppWorker] 🔍 Avaliando mensagem recebida de ${msg.from} [ID: ${msg.id}]`, {
+      category: "MESSAGE_EVALUATION",
+      event: "MESSAGE_EVALUATED",
+      from: msg.from,
+      msgId: msg.id,
+      bodySnippet: msg.body.slice(0, 150),
+      operationId,
+    });
+
     const match = msg.body.match(this.inviteRegex);
-    if (!match) return;
+    if (!match) {
+      this.logger.info(`[WhatsAppWorker] Mensagem de ${msg.from} não contém link de convite Velox`, {
+        category: "MESSAGE_EVALUATION",
+        event: "MESSAGE_NO_INVITE_MATCH",
+        from: msg.from,
+        msgId: msg.id,
+        bodySnippet: msg.body.slice(0, 150),
+        operationId,
+      });
+      return;
+    }
 
     const targetUrl = match[0];
     this.logger.info(`🎉 Convite Velox capturado no WhatsApp! Link: ${targetUrl}`, { operationId });

@@ -260,13 +260,42 @@ export class BaileysProvider implements WhatsAppProvider {
         if (!msg.message) continue;
 
         const sender = msg.key.remoteJid || "";
+        const msgId = msg.key.id || `${sender}_${msg.messageTimestamp}`;
+        const messageTypes = Object.keys(msg.message);
+
+        // 🟢 LOG EXPLÍCITO SOLICITADO PELO USUÁRIO: Registra toda mensagem que chega na camada do WhatsApp
+        this.logger.info(`📩 Mensagem nova recebida no WhatsApp [Remetente: ${sender}, ID: ${msgId}, Tipo: ${upsert.type}]`, {
+          category: "MESSAGE_RECEIVED",
+          event: "MESSAGE_RECEIVED",
+          sender,
+          msgId,
+          upsertType: upsert.type,
+          fromMe: msg.key.fromMe,
+          messageTypes,
+        });
 
         if (
-          sender.endsWith("@g.us") ||
           sender.endsWith("@broadcast") ||
           sender.endsWith("@newsletter")
         ) {
+          this.logger.info(`[BaileysProvider] Mensagem ignorada: remetente é broadcast/newsletter (${sender})`, {
+            category: "MESSAGE_IGNORED",
+            event: "MESSAGE_IGNORED_BROADCAST",
+            sender,
+            msgId,
+          });
           continue;
+        }
+
+        if (sender.endsWith("@g.us")) {
+          const participant = msg.key.participant || "desconhecido";
+          this.logger.info(`[BaileysProvider] 👥 Mensagem de GRUPO recebida [Grupo: ${sender}, Enciado por: ${participant}]`, {
+            category: "MESSAGE_GROUP_RECEIVED",
+            event: "MESSAGE_GROUP_RECEIVED",
+            groupJid: sender,
+            participant,
+            msgId,
+          });
         }
 
         // Armazena a mensagem na store para permitir retentativas de descriptografia (getMessage)
@@ -276,39 +305,86 @@ export class BaileysProvider implements WhatsAppProvider {
         }
 
         // Ignorar mensagens enviadas pelo próprio bot no que tange a escuta de convites
-        if (msg.key.fromMe) continue;
+        if (msg.key.fromMe) {
+          this.logger.debug(`[BaileysProvider] Mensagem ignorada: enviada pelo próprio bot (fromMe)`, {
+            category: "MESSAGE_IGNORED",
+            event: "MESSAGE_IGNORED_FROM_ME",
+            msgId,
+          });
+          continue;
+        }
 
         // Envia imediatamente a confirmação de leitura (Read Receipt) para o WhatsApp
         if (msg.key.id) {
           sock.readMessages([msg.key]).catch(() => {});
         }
 
-        let innerMessage = msg.message;
+        // Desenrola empacotamentos conhecidos (Ephemeral, ViewOnce, Document, Protocol, etc.)
+        let innerMessage: any = msg.message;
         if (innerMessage.ephemeralMessage) {
-          innerMessage = innerMessage.ephemeralMessage.message!;
-        } else if (innerMessage.viewOnceMessage) {
-          innerMessage = innerMessage.viewOnceMessage.message!;
-        } else if (innerMessage.viewOnceMessageV2) {
-          innerMessage = innerMessage.viewOnceMessageV2.message!;
-        } else if (innerMessage.documentWithCaptionMessage) {
-          innerMessage = innerMessage.documentWithCaptionMessage.message!;
-        } else if (innerMessage.protocolMessage?.editedMessage) {
+          innerMessage = innerMessage.ephemeralMessage.message || innerMessage;
+        }
+        if (innerMessage.viewOnceMessage) {
+          innerMessage = innerMessage.viewOnceMessage.message || innerMessage;
+        }
+        if (innerMessage.viewOnceMessageV2) {
+          innerMessage = innerMessage.viewOnceMessageV2.message || innerMessage;
+        }
+        if (innerMessage.viewOnceMessageV2Extension) {
+          innerMessage = innerMessage.viewOnceMessageV2Extension.message || innerMessage;
+        }
+        if (innerMessage.documentWithCaptionMessage) {
+          innerMessage = innerMessage.documentWithCaptionMessage.message || innerMessage;
+        }
+        if (innerMessage.protocolMessage?.editedMessage) {
           innerMessage = innerMessage.protocolMessage.editedMessage;
         }
 
-        const body =
+        // Extração Universal de Texto cobrindo mensagens normais, interativas, templates e botões
+        let body =
           innerMessage.conversation ||
           innerMessage.extendedTextMessage?.text ||
           innerMessage.imageMessage?.caption ||
           innerMessage.videoMessage?.caption ||
           innerMessage.buttonsResponseMessage?.selectedButtonId ||
+          innerMessage.buttonsResponseMessage?.selectedDisplayText ||
           innerMessage.listResponseMessage?.singleSelectReply?.selectedRowId ||
           innerMessage.templateButtonReplyMessage?.selectedId ||
+          innerMessage.templateButtonReplyMessage?.selectedDisplayText ||
+          innerMessage.buttonsMessage?.contentText ||
+          innerMessage.buttonsMessage?.caption ||
+          innerMessage.interactiveMessage?.body?.text ||
+          innerMessage.interactiveMessage?.header?.title ||
+          innerMessage.templateMessage?.hydratedTemplate?.hydratedContentText ||
+          innerMessage.templateMessage?.fourRowTemplate?.hydratedTemplate?.hydratedContentText ||
           "";
 
-        if (!body) continue;
+        // FALLBACK JSON VARREDURA: Se a extração padrão não achou nada ou se pode haver uma URL aninhada em Protobuf novo
+        if (!body || !body.includes("VisualizarConvite")) {
+          try {
+            const rawJsonStr = JSON.stringify(msg.message);
+            const urlMatch = rawJsonStr.match(/https?:\/\/[^\s"'>]*ChaveConvite=[a-f0-9\-]+/i);
+            if (urlMatch && urlMatch[0]) {
+              body = urlMatch[0];
+              this.logger.info(`[BaileysProvider] 🔍 Link Velox localizado via Varredura Fallback no JSON Bruto! URL: ${body}`, {
+                category: "FALLBACK_URL_EXTRACTED",
+                event: "FALLBACK_URL_EXTRACTED",
+                msgId,
+              });
+            }
+          } catch (_) {}
+        }
 
-        const msgId = msg.key.id || `${sender}_${msg.messageTimestamp}`;
+        if (!body) {
+          this.logger.warn(`[BaileysProvider] Mensagem recebida mas nenhum texto/URL pôde ser extraído`, {
+            category: "MESSAGE_IGNORED",
+            event: "MESSAGE_IGNORED_EMPTY_BODY",
+            msgId,
+            messageTypes,
+          });
+          continue;
+        }
+
         const timestamp =
           typeof msg.messageTimestamp === "number"
             ? msg.messageTimestamp * 1000
@@ -320,6 +396,13 @@ export class BaileysProvider implements WhatsAppProvider {
           body,
           timestamp,
         };
+
+        this.logger.info(`[BaileysProvider] 🟢 Mensagem processada e enviada para o Worker [Tamanho: ${body.length} chars]`, {
+          category: "MESSAGE_PROCESSED",
+          event: "MESSAGE_PROCESSED",
+          msgId,
+          bodySnippet: body.slice(0, 150),
+        });
 
         this.emitter.emit("message", payload);
       }
@@ -352,7 +435,7 @@ export class BaileysProvider implements WhatsAppProvider {
   public isSocketOpen(): boolean {
     if (!this.socket) return false;
     const ws = (this.socket as any).ws;
-    return ws && ws.isOpen === true;
+    return ws && (ws.readyState === 1 || ws.isOpen === true);
   }
 
   public async requestPairingCode(phoneNumber: string): Promise<string> {
