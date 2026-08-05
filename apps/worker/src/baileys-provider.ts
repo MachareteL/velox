@@ -174,7 +174,7 @@ export class BaileysProvider implements WhatsAppProvider {
       generateHighQualityLinkPreview: false,
       syncFullHistory: false,
       shouldSyncHistoryMessage: () => true, // Permite ler mensagens recentes enviadas durante breves desconexões
-      markOnlineOnConnect: true,
+      markOnlineOnConnect: false,
       connectTimeoutMs: 60000,
       keepAliveIntervalMs: 25000,
       retryRequestDelayMs: 500,
@@ -290,10 +290,10 @@ export class BaileysProvider implements WhatsAppProvider {
           continue;
         }
 
-        // Envia imediatamente a confirmação de leitura (Read Receipt) para o WhatsApp
-        if (msg.key.id) {
-          sock.readMessages([msg.key]).catch(() => {});
-        }
+        // Removido o envio automático de confirmação de leitura para não tirar a notificação do celular do cliente
+        // if (msg.key.id) {
+        //   sock.readMessages([msg.key]).catch(() => {});
+        // }
 
         // Desenrola empacotamentos conhecidos (Ephemeral, ViewOnce, Document, Protocol, etc.)
         let innerMessage: any = msg.message;
