@@ -119,7 +119,11 @@ export class BaileysProvider implements WhatsAppProvider {
   public async sendPing(): Promise<boolean> {
     if (!this.socket || this.connectionState !== "CONNECTED") return false;
     try {
-      await this.socket.sendPresenceUpdate("available");
+      if (!this.isSocketOpen()) return false;
+      const ws = (this.socket as any).ws;
+      if (ws && typeof ws.ping === "function") {
+        ws.ping();
+      }
       return true;
     } catch (_) {
       return false;
