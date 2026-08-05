@@ -274,30 +274,6 @@ export class BaileysProvider implements WhatsAppProvider {
           messageTypes,
         });
 
-        if (
-          sender.endsWith("@broadcast") ||
-          sender.endsWith("@newsletter")
-        ) {
-          this.logger.info(`[BaileysProvider] Mensagem ignorada: remetente é broadcast/newsletter (${sender})`, {
-            category: "MESSAGE_IGNORED",
-            event: "MESSAGE_IGNORED_BROADCAST",
-            sender,
-            msgId,
-          });
-          continue;
-        }
-
-        if (sender.endsWith("@g.us")) {
-          const participant = msg.key.participant || "desconhecido";
-          this.logger.info(`[BaileysProvider] 👥 Mensagem de GRUPO recebida [Grupo: ${sender}, Enciado por: ${participant}]`, {
-            category: "MESSAGE_GROUP_RECEIVED",
-            event: "MESSAGE_GROUP_RECEIVED",
-            groupJid: sender,
-            participant,
-            msgId,
-          });
-        }
-
         // Armazena a mensagem na store para permitir retentativas de descriptografia (getMessage)
         if (msg.key.id) {
           const storeKey = `${sender}:${msg.key.id}`;
