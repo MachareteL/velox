@@ -164,94 +164,174 @@ export function CallsFeed({ calls, onRefreshCalls }: CallsFeedProps) {
           </p>
         </div>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="text-[11px] uppercase tracking-wider text-gray-400 bg-gray-950/80 border-b border-gray-800/80">
-              <tr>
-                <th className="py-3 px-4 rounded-l-lg">Ação</th>
-                <th className="py-3 px-4">Status</th>
-                <th className="py-3 px-4">Veículo Alocado</th>
-                <th className="py-3 px-4">Tempo de Aceite</th>
-                <th className="py-3 px-4">Prévia (Chegada)</th>
-                <th className="py-3 px-4">Link do Convite</th>
-                <th className="py-3 px-4 rounded-r-lg">Horário</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-800/40">
-              {filteredCalls.map((call) => {
-                const statusInfo = getCallStatusInfo(call);
-                return (
-                  <tr key={call.id} className="hover:bg-gray-800/20 transition-colors">
-                    {/* Ação (Finalizar Atendimento) */}
-                    <td className="py-3.5 px-4">
-                      {statusInfo.isActive ? (
-                        <button
-                          onClick={() => handleFinishCall(call.id)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 transition-all hover:scale-105 active:scale-95 whitespace-nowrap"
-                        >
-                          <CheckSquare className="w-3.5 h-3.5" />
-                          Finalizar Atendimento
-                        </button>
-                      ) : (
-                        <span className="text-gray-600 text-xs font-mono">-</span>
-                      )}
-                    </td>
+        <>
+          {/* Visão em Cards para Mobile (< md) */}
+          <div className="md:hidden space-y-3">
+            {filteredCalls.map((call) => {
+              const statusInfo = getCallStatusInfo(call);
+              return (
+                <div
+                  key={call.id}
+                  className="p-4 rounded-xl bg-gray-950/60 border border-gray-800/80 flex flex-col gap-3 transition-colors hover:border-gray-700/80"
+                >
+                  {/* Linha Superior: Status e Data/Hora */}
+                  <div className="flex items-center justify-between gap-2 border-b border-gray-800/60 pb-2.5">
+                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border ${statusInfo.badgeClass}`}>
+                      {statusInfo.icon} {statusInfo.label}
+                    </span>
+                    <span className="text-[11px] text-gray-400 font-mono">
+                      {new Date(call.created_at).toLocaleDateString('pt-BR')} {new Date(call.created_at).toLocaleTimeString('pt-BR')}
+                    </span>
+                  </div>
 
-                    {/* Status */}
-                    <td className="py-3.5 px-4">
-                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border ${statusInfo.badgeClass}`}>
-                        {statusInfo.icon} {statusInfo.label}
-                      </span>
-                    </td>
-
-                    {/* Veículo Alocado */}
-                    <td className="py-3.5 px-4 text-xs text-gray-300">
+                  {/* Informações Principais */}
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <span className="text-[11px] text-gray-500 block mb-0.5">Veículo Alocado</span>
                       {call.vehicle ? (
-                        <span className="inline-flex items-center gap-1.5 text-emerald-300 font-semibold px-2 py-0.5 rounded-md bg-emerald-950/40 border border-emerald-800/30">
+                        <span className="inline-flex items-center gap-1 text-emerald-300 font-semibold px-2 py-0.5 rounded-md bg-emerald-950/40 border border-emerald-800/30">
                           <Truck className="w-3.5 h-3.5 text-emerald-400" />
                           {call.vehicle.title}
                         </span>
                       ) : (
-                        <span className="text-gray-500 font-mono text-[11px]">Padrão</span>
+                        <span className="text-gray-400 font-mono text-[11px]">Padrão</span>
                       )}
-                    </td>
+                    </div>
 
-                    {/* Duração em ms */}
-                    <td className="py-3.5 px-4 font-mono font-semibold text-emerald-400 text-xs">
-                      {call.duration_ms} ms
-                    </td>
-
-                    {/* Prévia (minutos) */}
-                    <td className="py-3.5 px-4 font-semibold text-white">
-                      <span className="inline-flex items-center gap-1 text-amber-300 text-xs font-mono">
+                    <div>
+                      <span className="text-[11px] text-gray-500 block mb-0.5">Prévia (Chegada)</span>
+                      <span className="inline-flex items-center gap-1 text-amber-300 font-semibold font-mono">
                         <Clock className="w-3.5 h-3.5 text-amber-400" />
                         {call.previa_minutos || 50} min
                       </span>
-                    </td>
+                    </div>
 
-                    {/* URL */}
-                    <td className="py-3.5 px-4">
+                    <div>
+                      <span className="text-[11px] text-gray-500 block mb-0.5">Tempo de Aceite</span>
+                      <span className="font-mono font-semibold text-emerald-400">
+                        {call.duration_ms} ms
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-[11px] text-gray-500 block mb-0.5">Convite</span>
                       <a
                         href={call.url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 underline truncate max-w-[200px]"
+                        className="inline-flex items-center gap-1 text-blue-400 hover:text-blue-300 underline font-medium truncate max-w-full"
                       >
                         <ExternalLink className="w-3 h-3 flex-shrink-0" />
-                        Visualizar Convite
+                        Ver Convite
                       </a>
-                    </td>
+                    </div>
+                  </div>
 
-                    {/* Data/Hora */}
-                    <td className="py-3.5 px-4 text-xs text-gray-400 font-mono">
-                      {new Date(call.created_at).toLocaleTimeString('pt-BR')}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                  {/* Botão de Ação Destacado no Mobile */}
+                  {statusInfo.isActive && (
+                    <button
+                      onClick={() => handleFinishCall(call.id)}
+                      className="w-full mt-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20 active:scale-98 transition-all"
+                    >
+                      <CheckSquare className="w-4 h-4" />
+                      Finalizar Atendimento
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Visão em Tabela para Desktop (>= md) */}
+          <div className="hidden md:block overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="text-[11px] uppercase tracking-wider text-gray-400 bg-gray-950/80 border-b border-gray-800/80">
+                <tr>
+                  <th className="py-3 px-4 rounded-l-lg">Ação</th>
+                  <th className="py-3 px-4">Status</th>
+                  <th className="py-3 px-4">Veículo Alocado</th>
+                  <th className="py-3 px-4">Tempo de Aceite</th>
+                  <th className="py-3 px-4">Prévia (Chegada)</th>
+                  <th className="py-3 px-4">Link do Convite</th>
+                  <th className="py-3 px-4 rounded-r-lg">Data e Hora</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-800/40">
+                {filteredCalls.map((call) => {
+                  const statusInfo = getCallStatusInfo(call);
+                  return (
+                    <tr key={call.id} className="hover:bg-gray-800/20 transition-colors">
+                      {/* Ação (Finalizar Atendimento) */}
+                      <td className="py-3.5 px-4">
+                        {statusInfo.isActive ? (
+                          <button
+                            onClick={() => handleFinishCall(call.id)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 transition-all hover:scale-105 active:scale-95 whitespace-nowrap"
+                          >
+                            <CheckSquare className="w-3.5 h-3.5" />
+                            Finalizar Atendimento
+                          </button>
+                        ) : (
+                          <span className="text-gray-600 text-xs font-mono">-</span>
+                        )}
+                      </td>
+
+                      {/* Status */}
+                      <td className="py-3.5 px-4">
+                        <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border ${statusInfo.badgeClass}`}>
+                          {statusInfo.icon} {statusInfo.label}
+                        </span>
+                      </td>
+
+                      {/* Veículo Alocado */}
+                      <td className="py-3.5 px-4 text-xs text-gray-300">
+                        {call.vehicle ? (
+                          <span className="inline-flex items-center gap-1.5 text-emerald-300 font-semibold px-2 py-0.5 rounded-md bg-emerald-950/40 border border-emerald-800/30">
+                            <Truck className="w-3.5 h-3.5 text-emerald-400" />
+                            {call.vehicle.title}
+                          </span>
+                        ) : (
+                          <span className="text-gray-500 font-mono text-[11px]">Padrão</span>
+                        )}
+                      </td>
+
+                      {/* Duração em ms */}
+                      <td className="py-3.5 px-4 font-mono font-semibold text-emerald-400 text-xs">
+                        {call.duration_ms} ms
+                      </td>
+
+                      {/* Prévia (minutos) */}
+                      <td className="py-3.5 px-4 font-semibold text-white">
+                        <span className="inline-flex items-center gap-1 text-amber-300 text-xs font-mono">
+                          <Clock className="w-3.5 h-3.5 text-amber-400" />
+                          {call.previa_minutos || 50} min
+                        </span>
+                      </td>
+
+                      {/* URL */}
+                      <td className="py-3.5 px-4">
+                        <a
+                          href={call.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 underline truncate max-w-[200px]"
+                        >
+                          <ExternalLink className="w-3 h-3 flex-shrink-0" />
+                          Visualizar Convite
+                        </a>
+                      </td>
+
+                      {/* Data e Hora */}
+                      <td className="py-3.5 px-4 text-xs text-gray-400 font-mono whitespace-nowrap">
+                        {new Date(call.created_at).toLocaleDateString('pt-BR')} {new Date(call.created_at).toLocaleTimeString('pt-BR')}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </div>
   );

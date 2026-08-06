@@ -103,7 +103,9 @@ export function Navbar({ status, isActive, onToggleActive, onOpenQR }: NavbarPro
           {/* Botão Conectar WhatsApp */}
           <button
             onClick={onOpenQR}
-            className="flex items-center gap-2 px-2.5 sm:px-3.5 py-2 text-xs font-semibold rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white shadow-lg shadow-emerald-600/20 transition-all hover:scale-105 active:scale-95 shrink-0"
+            className={`items-center gap-2 px-2.5 sm:px-3.5 py-2 text-xs font-semibold rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white shadow-lg shadow-emerald-600/20 transition-all hover:scale-105 active:scale-95 shrink-0 ${
+              status === 'CONNECTED' ? 'hidden md:flex' : 'flex'
+            }`}
           >
             <QrCode className="w-4 h-4 shrink-0" />
             <span className="hidden md:inline">Conectar WhatsApp</span>

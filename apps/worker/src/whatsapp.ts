@@ -704,18 +704,20 @@ export class WhatsAppWorker {
         operationId,
       };
 
-      await recordCapturedCall(this.supabase, {
-        tenant_id: this.tenantId,
-        url: result.url,
-        distancia_km: result.distanciaKm,
-        previa_valor: result.previaValor,
-        previa_minutos: previaMinutos,
-        vehicle_id: availableVehicle?.id || null,
-        duration_ms: result.durationMs,
-        status: result.success ? "SUCCESS" : "FAILED",
-        response_payload: responsePayloadToRecord,
-        error_message: result.errorMessage || null,
-      });
+      if (!isDuplicate) {
+        await recordCapturedCall(this.supabase, {
+          tenant_id: this.tenantId,
+          url: result.url,
+          distancia_km: result.distanciaKm,
+          previa_valor: result.previaValor,
+          previa_minutos: previaMinutos,
+          vehicle_id: availableVehicle?.id || null,
+          duration_ms: result.durationMs,
+          status: result.success ? "SUCCESS" : "FAILED",
+          response_payload: responsePayloadToRecord,
+          error_message: result.errorMessage || null,
+        });
+      }
 
       await recordSystemLog(this.supabase, {
         tenant_id: this.tenantId,
