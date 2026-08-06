@@ -1,7 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
 import * as cheerio from 'cheerio';
 import type { AcceptPayload } from '@velox/types';
-import { calcularPrevia } from './calculator';
+import { calcularPrevia, converterMetrosParaKm, calcularPreviaKm } from './calculator';
 import { WorkerLogger, LoggerFactory } from './logger';
 
 export interface ScraperDebugInfo {
@@ -134,10 +134,6 @@ export class VeloxScraper {
           this.logger.warn(`[Scraper] 🛑 Velox informou no HTML GET: "Convite indisponível/encerrado/cancelado"`);
           throw new NonRetryableError(`Convite indisponível no Velox (${pageTitle}): ${bodyText.slice(0, 150)}`);
         }
-        if (bodyText.includes('Login') && (bodyText.includes('Senha') || bodyText.includes('Entrar')) && !bodyText.includes('VisualizarConvite')) {
-          this.logger.warn(`[Scraper] 🛑 Velox redirecionou para tela de Login`);
-          throw new NonRetryableError(`Página de convite redirecionou para Login do Velox (Autenticação exigida). Título: ${pageTitle}`);
-        }
 
         debugInfo.failedStep = 'FORM_EXTRACTION';
 
@@ -228,10 +224,10 @@ export class VeloxScraper {
 
         tParse = Date.now() - startParse;
 
-        const distanciaNum = parseInt(distanciaBaseOrigem.replace(/\D/g, ''), 10) || 0;
-        const valorPrevia = calcularPrevia(distanciaNum);
+        const distanciaKm = converterMetrosParaKm(distanciaBaseOrigem);
+        const valorPrevia = calcularPreviaKm(distanciaKm);
 
-        this.logger.info(`[Scraper] 📦 [Etapa 2/3 Concluída em ${tParse}ms] ID Oferta: "${id}" | Distância: ${distanciaNum}km | Prévia: ${valorPrevia}min`, { actionUrl });
+        this.logger.info(`[Scraper] 📦 [Etapa 2/3 Concluída em ${tParse}ms] ID Oferta: "${id}" | Distância: ${distanciaKm}km | Prévia: ${valorPrevia}min`, { actionUrl });
 
         // -------------------------------------------------------------
         // ETAPA 3: HTTP POST DE ACEITE
@@ -301,7 +297,7 @@ export class VeloxScraper {
           durationMs: totalMs,
           statusCode: responsePost.status,
           url,
-          distanciaKm: distanciaNum,
+          distanciaKm: distanciaKm,
           previaValor: valorPrevia,
           payload,
           responsePayload: {

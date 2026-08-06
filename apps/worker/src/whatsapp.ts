@@ -7,7 +7,6 @@ import {
   updateSessionStatus,
 } from "@velox/database";
 import { VeloxScraper } from "./scraper";
-import { calcularPrevia } from "./calculator";
 import { WhatsAppProvider, IncomingMessagePayload } from "./whatsapp-provider";
 import { BaileysProvider, purgeBaileysSessionDir } from "./baileys-provider";
 import { WorkerLogger, LoggerFactory } from "./logger";
@@ -694,7 +693,7 @@ export class WhatsAppWorker {
   ): Promise<void> {
     try {
       const result = await this.scraper.processarConvite(targetUrl);
-      const previaMinutos = calcularPrevia(result.distanciaKm);
+      const previaMinutos = result.previaValor ?? 50;
 
       const responsePayloadToRecord = {
         ...(result.responsePayload || {}),
