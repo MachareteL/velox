@@ -206,7 +206,7 @@ export class BaileysProvider implements WhatsAppProvider {
     });
 
     // Eventos do ciclo de vida da conexão
-    sock.ev.on("connection.update", (update) => {
+    sock.ev.on("connection.update", async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
@@ -218,6 +218,15 @@ export class BaileysProvider implements WhatsAppProvider {
       } else if (connection === "open") {
         this.connectionState = "CONNECTED";
         this.logger.socket("SOCKET_CONNECTED", `Socket Baileys CONECTADO com sucesso para tenant ${this.tenantId}`);
+        
+        // Garante que o bot fique invisível para não silenciar as notificações no celular do cliente
+        try {
+          await sock.sendPresenceUpdate("unavailable");
+          this.logger.info(`[BaileysProvider] Status 'unavailable' injetado para preservar som no mobile.`, { event: "PRESENCE_UPDATED" });
+        } catch (err: any) {
+          this.logger.warn(`[BaileysProvider] Falha ao enviar 'unavailable' no connect: ${err.message}`);
+        }
+
         this.emitter.emit("ready");
       } else if (connection === "close") {
         this.connectionState = "DISCONNECTED";
