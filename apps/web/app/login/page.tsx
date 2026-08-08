@@ -50,8 +50,9 @@ export default function LoginPage() {
               <Activity className="w-7 h-7 text-emerald-400" />
             </div>
           </div>
-          <h1 className="text-2xl font-extrabold text-white tracking-tight">Velox Automator</h1>
+          <h1 className="text-2xl font-extrabold text-white tracking-tight">VeloXON</h1>
           <p className="text-xs text-gray-400 mt-1">Acesse a plataforma de automação de convites</p>
+
         </div>
 
         {/* Card do Formulário */}

@@ -69,8 +69,9 @@ export async function POST(req: NextRequest) {
     }
 
     const notificationPayload = JSON.stringify({
-      title: title || '🔔 Velox - Atendimento Aceito!',
+      title: title || '🔔 VeloXON - Atendimento Aceito!',
       body: msgBody || 'O robô aceitou automaticamente um novo chamado para você.',
+
       url: url || '/',
       callId: callId || undefined,
       timestamp: Date.now(),

@@ -79,8 +79,9 @@ export function Navbar({
           </div>
           <div className="min-w-0">
             <h1 className="font-bold text-base sm:text-lg text-white tracking-tight flex items-center gap-2 truncate">
-              Velox Automator
+              VeloXON
             </h1>
+
             <p className="hidden sm:block text-[11px] text-gray-400">Automação Inteligente de Convites</p>
           </div>
         </div>

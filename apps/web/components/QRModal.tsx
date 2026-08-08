@@ -148,8 +148,9 @@ export function QRModal({ isOpen, onClose, status, qrCode, pairingCode, phoneNum
           </div>
           <h3 className="text-xl font-extrabold text-white tracking-tight">Conectar WhatsApp</h3>
           <p className="text-xs text-gray-400 mt-1">
-            Escolha como prefere vincular o WhatsApp da sua empresa ao Velox Automator.
+            Escolha como prefere vincular o WhatsApp da sua empresa ao VeloXON.
           </p>
+
         </div>
 
         {/* Abas de Escolha do Método */}

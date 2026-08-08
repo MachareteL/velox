@@ -21,7 +21,8 @@ self.addEventListener('push', (event) => {
 
   try {
     const data = event.data.json();
-    const title = data.title || '🔔 Velox - Atendimento Aceito!';
+    const title = data.title || '🔔 VeloXON - Atendimento Aceito!';
+
     const options = {
       body: data.body || 'O robô aceitou automaticamente um novo chamado para você.',
       icon: '/icons/icon-192.png',

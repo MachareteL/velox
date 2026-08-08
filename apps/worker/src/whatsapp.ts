@@ -782,7 +782,8 @@ export class WhatsAppWorker {
           {
             tenantId: this.tenantId,
             callId,
-            title: "🔔 Velox - Atendimento Aceito!",
+            title: "🔔 VeloXON - Atendimento Aceito!",
+
             body: "O robô aceitou automaticamente um novo chamado para você.",
             url: appUrl,
           },

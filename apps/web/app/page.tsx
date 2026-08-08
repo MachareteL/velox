@@ -319,7 +319,8 @@ export default function DashboardPage() {
                   <br />
                   2. Selecione <strong>Adicionar à Tela de Início <PlusSquare className="w-3 h-3 inline text-teal-300" /></strong>.
                   <br />
-                  3. Abra o app <strong>Velox</strong> na tela inicial para ativar os avisos push.
+                  3. Abra o app <strong>VeloXON</strong> na tela inicial para ativar os avisos push.
+
                 </p>
               </div>
             </div>

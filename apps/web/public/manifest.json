@@ -1,7 +1,8 @@
 {
-  "name": "Velox Automator",
-  "short_name": "Velox",
-  "description": "Automação e Notificações de Atendimento Velox SaaS",
+  "name": "VeloXON",
+  "short_name": "VeloXON",
+  "description": "Automação e Notificações de Atendimento VeloXON SaaS",
+
   "start_url": "/",
   "display": "standalone",
   "orientation": "portrait",

@@ -7,15 +7,16 @@ export const viewport = {
 };
 
 export const metadata = {
-  title: 'Velox Automator | Automação Inteligente de Convites',
+  title: 'VeloXON | Automação Inteligente de Convites',
   description: 'Painel exclusivo de automação e aceite instantâneo de convites para prestadores',
   manifest: '/manifest.json',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
-    title: 'Velox Automator',
+    title: 'VeloXON',
   },
 };
+
 
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
