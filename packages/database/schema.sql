@@ -151,3 +151,35 @@ CREATE POLICY "Logs - Leitura para Worker" ON public.system_logs
 DROP POLICY IF EXISTS "Logs - Permissao de Insercao" ON public.system_logs;
 CREATE POLICY "Logs - Permissao de Insercao" ON public.system_logs
   FOR INSERT WITH CHECK (true);
+
+-- 9. TABELA E POLÍTICAS DE RLS PARA `push_subscriptions` (WEB PUSH)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.push_subscriptions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+    endpoint TEXT NOT NULL UNIQUE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    user_agent TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE public.push_subscriptions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Push - Leitura individual" ON public.push_subscriptions;
+CREATE POLICY "Push - Leitura individual" ON public.push_subscriptions
+  FOR SELECT USING (auth.uid() = tenant_id);
+
+DROP POLICY IF EXISTS "Push - Insercao individual" ON public.push_subscriptions;
+CREATE POLICY "Push - Insercao individual" ON public.push_subscriptions
+  FOR INSERT WITH CHECK (auth.uid() = tenant_id);
+
+DROP POLICY IF EXISTS "Push - Delecao individual" ON public.push_subscriptions;
+CREATE POLICY "Push - Delecao individual" ON public.push_subscriptions
+  FOR DELETE USING (auth.uid() = tenant_id);
+
+DROP POLICY IF EXISTS "Push - Permissao backend" ON public.push_subscriptions;
+CREATE POLICY "Push - Permissao backend" ON public.push_subscriptions
+  FOR ALL USING (true);
+

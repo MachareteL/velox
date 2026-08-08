@@ -93,3 +93,26 @@ export interface MetricsSummary {
   avgDurationMs: number;
   sessionStatus: WhatsAppSessionStatus;
 }
+
+export interface PushSubscriptionKeys {
+  p256dh: string;
+  auth: string;
+}
+
+export interface PushSubscriptionPayload {
+  endpoint: string;
+  keys: PushSubscriptionKeys;
+  userAgent?: string;
+}
+
+export interface PushSubscriptionRecord {
+  id: string;
+  tenant_id: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  user_agent?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+

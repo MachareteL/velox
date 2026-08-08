@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Activity, QrCode, LogOut, User as UserIcon, Power, Play, Pause } from 'lucide-react';
+import { Activity, QrCode, LogOut, User as UserIcon, Power, Play, Pause, Bell, BellOff } from 'lucide-react';
 import type { WhatsAppSessionStatus } from '@velox/types';
 import { useAuth } from '../lib/auth-context';
 
@@ -10,10 +10,20 @@ interface NavbarProps {
   isActive: boolean;
   onToggleActive: () => void;
   onOpenQR: () => void;
+  isPushActive?: boolean;
+  onTogglePush?: () => void;
 }
 
-export function Navbar({ status, isActive, onToggleActive, onOpenQR }: NavbarProps) {
+export function Navbar({
+  status,
+  isActive,
+  onToggleActive,
+  onOpenQR,
+  isPushActive = false,
+  onTogglePush,
+}: NavbarProps) {
   const { user, signOut } = useAuth();
+
 
   const getStatusBadge = () => {
     switch (status) {
@@ -98,7 +108,34 @@ export function Navbar({ status, isActive, onToggleActive, onOpenQR }: NavbarPro
             </span>
           </div>
 
+          {/* Botão Notificações Web Push */}
+          {onTogglePush && (
+            <button
+              onClick={onTogglePush}
+              className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all duration-300 select-none ${
+                isPushActive
+                  ? 'bg-teal-500/10 border-teal-500/30 text-teal-400 shadow-lg shadow-teal-500/10 hover:bg-teal-500/20'
+                  : 'bg-gray-800/40 border-gray-700/50 text-gray-400 hover:text-gray-200 hover:bg-gray-800/80'
+              }`}
+              title={
+                isPushActive
+                  ? 'Notificações Push do SO Ativas no Dispositivo. Clique para desativar.'
+                  : 'Clique para ativar notificações sonoras nativas do SO.'
+              }
+            >
+              {isPushActive ? (
+                <Bell className="w-3.5 h-3.5 text-teal-400 animate-pulse shrink-0" />
+              ) : (
+                <BellOff className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+              )}
+              <span className="hidden md:inline">
+                Avisos Push: <strong>{isPushActive ? 'ATIVOS' : 'INATIVOS'}</strong>
+              </span>
+            </button>
+          )}
+
           {getStatusBadge()}
+
 
           {/* Botão Conectar WhatsApp */}
           <button

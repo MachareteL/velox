@@ -166,3 +166,78 @@ export async function recordSystemLog(
 
   return data as SystemLog;
 }
+
+export async function savePushSubscription(
+  supabase: SupabaseClient,
+  tenantId: string,
+  subscription: {
+    endpoint: string;
+    keys: { p256dh: string; auth: string };
+    userAgent?: string;
+  }
+): Promise<any> {
+  const { data, error } = await supabase
+    .from('push_subscriptions')
+    .upsert(
+      {
+        tenant_id: tenantId,
+        endpoint: subscription.endpoint,
+        p256dh: subscription.keys.p256dh,
+        auth: subscription.keys.auth,
+        user_agent: subscription.userAgent || null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'endpoint' }
+    )
+    .select('*')
+    .single();
+
+  if (error) {
+    throw new Error(`[Database Error] Falha ao salvar push_subscription: ${error.message}`);
+  }
+
+  return data;
+}
+
+export async function removePushSubscription(
+  supabase: SupabaseClient,
+  endpoint: string
+): Promise<boolean> {
+  const { error } = await supabase
+    .from('push_subscriptions')
+    .delete()
+    .eq('endpoint', endpoint);
+
+  if (error) {
+    throw new Error(`[Database Error] Falha ao remover push_subscription: ${error.message}`);
+  }
+
+  return true;
+}
+
+export async function getPushSubscriptionsByTenant(
+  supabase: SupabaseClient,
+  tenantId: string
+): Promise<any[]> {
+  const { data, error } = await supabase
+    .from('push_subscriptions')
+    .select('*')
+    .eq('tenant_id', tenantId);
+
+  if (error) {
+    throw new Error(`[Database Error] Falha ao buscar push_subscriptions: ${error.message}`);
+  }
+
+  return data || [];
+}
+
+export async function deletePushSubscriptionByEndpoint(
+  supabase: SupabaseClient,
+  endpoint: string
+): Promise<void> {
+  await supabase
+    .from('push_subscriptions')
+    .delete()
+    .eq('endpoint', endpoint);
+}
+

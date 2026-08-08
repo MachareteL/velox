@@ -1,5 +1,7 @@
 import QRCode from "qrcode";
+import axios from "axios";
 import { SupabaseClient } from "@supabase/supabase-js";
+
 import { Mutex } from "async-mutex";
 import {
   recordCapturedCall,
@@ -705,7 +707,7 @@ export class WhatsAppWorker {
       };
 
       if (!isDuplicate) {
-        await recordCapturedCall(this.supabase, {
+        const savedCall = await recordCapturedCall(this.supabase, {
           tenant_id: this.tenantId,
           url: result.url,
           distancia_km: result.distanciaKm,
@@ -717,6 +719,11 @@ export class WhatsAppWorker {
           response_payload: responsePayloadToRecord,
           error_message: result.errorMessage || null,
         });
+
+        // Se o aceite foi confirmado com sucesso, dispara notificação Web Push assíncrona
+        if (result.success && savedCall) {
+          this.dispatchPushNotificationAsync(savedCall.id);
+        }
       }
 
       await recordSystemLog(this.supabase, {
@@ -743,6 +750,7 @@ export class WhatsAppWorker {
         },
       });
     } catch (asyncErr: any) {
+
       this.logger.error("Erro crítico no processamento assíncrono do convite:", asyncErr);
       try {
         await recordSystemLog(this.supabase, {
@@ -756,7 +764,47 @@ export class WhatsAppWorker {
     }
   }
 
+  /**
+   * Dispara notificação Web Push de forma totalmente assíncrona (fora do loop do Baileys)
+   * através de chamada HTTP fire-and-forget para o endpoint /api/push/send do Next.js.
+   */
+  private dispatchPushNotificationAsync(callId?: string): void {
+    setImmediate(async () => {
+      try {
+        const appUrl =
+          process.env.WEB_APP_URL ||
+          process.env.NEXT_PUBLIC_APP_URL ||
+          "http://localhost:3000";
+        const webhookSecret = process.env.WEBHOOK_SECRET || "";
+
+        await axios.post(
+          `${appUrl}/api/push/send`,
+          {
+            tenantId: this.tenantId,
+            callId,
+            title: "🔔 Velox - Atendimento Aceito!",
+            body: "O robô aceitou automaticamente um novo chamado para você.",
+            url: appUrl,
+          },
+          {
+            timeout: 5000,
+            headers: webhookSecret ? { Authorization: `Bearer ${webhookSecret}` } : {},
+          }
+        );
+
+        this.logger.info(
+          `[PushDispatch] Disparo de Web Push enviado com sucesso para API Web (tenant: ${this.tenantId})`
+        );
+      } catch (err: any) {
+        this.logger.warn(
+          `[PushDispatch] Aviso: Não foi possível contatar API de Push (pode requerer configuração de WEB_APP_URL): ${err?.message}`
+        );
+      }
+    });
+  }
+
   // ── Internal Unlocked Methods ──────────────────────────────────────────
+
 
   private async startInternal(operationId?: string, source: string = "INTERNAL"): Promise<void> {
     if (this.isRunning() || this.state === "STOPPING") {
