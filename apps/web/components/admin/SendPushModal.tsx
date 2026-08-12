@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { X, Send, Bell, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { useAuth } from '@/lib/auth-context';
 import { SendTestPushResponse } from '@/lib/admin/types';
 
 interface SendPushModalProps {
@@ -21,6 +22,7 @@ export function SendPushModal({
   targetUser,
   onPushSent,
 }: SendPushModalProps) {
+  const { session } = useAuth();
   const [title, setTitle] = useState('🔔 Teste VeloXON');
   const [body, setBody] = useState('Esta é uma notificação de teste enviada pelo administrador.');
   const [loading, setLoading] = useState(false);
@@ -36,11 +38,17 @@ export function SendPushModal({
     setResult(null);
 
     try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`;
+      }
+
       const res = await fetch('/api/admin/notifications/test', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers,
         body: JSON.stringify({
           targetTenantId: targetUser.id,
           title,

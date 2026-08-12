@@ -69,9 +69,9 @@ export default function AdminDashboardPage() {
         <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-400 mb-4">
           <ShieldAlert className="w-12 h-12" />
         </div>
-        <h2 className="text-xl font-bold text-white mb-2">Acesso Negado à Área Administrativa</h2>
+        <h2 className="text-xl font-bold text-white mb-2">Acesso Restrito</h2>
         <p className="text-xs text-gray-400 max-w-md mb-6">
-          Seu usuário autenticado não possui privilégios de administrador. Apenas o UUID especificado em <code className="text-purple-300 font-mono bg-purple-950/50 px-1.5 py-0.5 rounded">ADMIN_USER_ID</code> no servidor tem autorização para visualizar este painel.
+          Você não possui permissão para acessar a área administrativa.
         </p>
         <Link
           href="/"

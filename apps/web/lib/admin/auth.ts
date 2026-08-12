@@ -59,7 +59,7 @@ export async function requireAdmin(req: NextRequest): Promise<AdminAuthResult> {
       user: null,
       isAdmin: false,
       errorResponse: NextResponse.json(
-        { error: 'Não autenticado. Token de acesso não fornecido.' },
+        { error: 'Não autorizado.' },
         { status: 401 }
       ),
     };
@@ -87,7 +87,7 @@ export async function requireAdmin(req: NextRequest): Promise<AdminAuthResult> {
       user,
       isAdmin: false,
       errorResponse: NextResponse.json(
-        { error: 'Acesso negado. ADMIN_USER_ID não configurado no servidor.' },
+        { error: 'Acesso negado.' },
         { status: 403 }
       ),
     };
@@ -98,7 +98,7 @@ export async function requireAdmin(req: NextRequest): Promise<AdminAuthResult> {
       user,
       isAdmin: false,
       errorResponse: NextResponse.json(
-        { error: 'Acesso negado. Usuário sem privilégios administrativos.' },
+        { error: 'Acesso negado.' },
         { status: 403 }
       ),
     };
