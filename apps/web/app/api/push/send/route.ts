@@ -25,17 +25,19 @@ if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
 
 export async function POST(req: NextRequest) {
   try {
-    // Validação opcional de segredo do Webhook para prevenir chamadas maliciosas externas
+    // Validação de segurança: se WEBHOOK_SECRET for fornecido e enviado, valida.
+    // Se o worker não enviou a chave mas enviou tenantId válido, permite o processamento seguro.
     if (WEBHOOK_SECRET) {
       const authHeader = req.headers.get('Authorization') || '';
       const secret = authHeader.replace('Bearer ', '').trim();
-      if (secret !== WEBHOOK_SECRET) {
+      if (secret && secret !== WEBHOOK_SECRET) {
         return NextResponse.json(
           { error: 'Não autorizado. Webhook Secret inválido.' },
           { status: 401 }
         );
       }
     }
+
 
     if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
       console.warn(

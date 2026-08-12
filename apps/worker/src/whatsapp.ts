@@ -775,7 +775,7 @@ export class WhatsAppWorker {
           process.env.WEB_APP_URL ||
           process.env.NEXT_PUBLIC_APP_URL ||
           "http://localhost:3000";
-        const webhookSecret = process.env.WEBHOOK_SECRET || "";
+        const webhookSecret = process.env.WEBHOOK_SECRET || "velox_secure_push_webhook_secret_2026";
 
         await axios.post(
           `${appUrl}/api/push/send`,
@@ -783,15 +783,15 @@ export class WhatsAppWorker {
             tenantId: this.tenantId,
             callId,
             title: "🔔 VeloXON - Atendimento Aceito!",
-
             body: "O robô aceitou automaticamente um novo chamado para você.",
             url: appUrl,
           },
           {
             timeout: 5000,
-            headers: webhookSecret ? { Authorization: `Bearer ${webhookSecret}` } : {},
+            headers: { Authorization: `Bearer ${webhookSecret}` },
           }
         );
+
 
         this.logger.info(
           `[PushDispatch] Disparo de Web Push enviado com sucesso para API Web (tenant: ${this.tenantId})`
