@@ -68,23 +68,47 @@ export async function GET(req: NextRequest) {
       .select('*', { count: 'exact', head: true })
       .eq('status', 'FAILED');
 
-    // Cálculos de agregados financeiros e tempos das chamadas
+    // Cálculos de agregados operacionais, prévia (minutos), distância (km) e tempos de resposta
     const { data: callStatsData } = await supabase
       .from('captured_calls')
-      .select('duration_ms, previa_valor');
+      .select('duration_ms, distancia_km, previa_minutos, previa_valor');
 
     let totalDurationMs = 0;
-    let totalValueEstimate = 0;
+    let totalPreviaMinutes = 0;
+    let previaCount = 0;
+    let totalDistanceKm = 0;
+    let distanceCount = 0;
     const callCount = callStatsData?.length || 0;
 
     if (callStatsData) {
       for (const call of callStatsData) {
         if (call.duration_ms) totalDurationMs += Number(call.duration_ms);
-        if (call.previa_valor) totalValueEstimate += Number(call.previa_valor);
+        
+        const previa = call.previa_minutos !== null && call.previa_minutos !== undefined
+          ? Number(call.previa_minutos)
+          : call.previa_valor !== null && call.previa_valor !== undefined
+          ? Number(call.previa_valor)
+          : null;
+
+        if (previa !== null && !isNaN(previa) && previa > 0) {
+          totalPreviaMinutes += previa;
+          previaCount++;
+        }
+
+        if (call.distancia_km !== null && call.distancia_km !== undefined) {
+          const dist = Number(call.distancia_km);
+          if (!isNaN(dist) && dist > 0) {
+            totalDistanceKm += dist;
+            distanceCount++;
+          }
+        }
       }
     }
 
     const avgDurationMs = callCount > 0 ? Math.round(totalDurationMs / callCount) : 0;
+    const avgPreviaMinutes = previaCount > 0 ? Math.round(totalPreviaMinutes / previaCount) : 0;
+    const avgDistanceKm = distanceCount > 0 ? Math.round((totalDistanceKm / distanceCount) * 10) / 10 : 0;
+
     const totCalls = totalCalls || 0;
     const succCalls = successfulCalls || 0;
     const successRatePercentage = totCalls > 0 ? Math.round((succCalls / totCalls) * 10000) / 100 : 0;
@@ -122,7 +146,8 @@ export async function GET(req: NextRequest) {
       failedCalls: failedCalls || 0,
       successRatePercentage,
       avgDurationMs,
-      totalValueEstimate,
+      avgPreviaMinutes,
+      avgDistanceKm,
 
       totalPushSubscriptions: totalPushSubscriptions || 0,
       usersWithPushCount: uniqueTenantsSet.size,

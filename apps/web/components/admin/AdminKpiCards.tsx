@@ -140,22 +140,23 @@ export function AdminKpiCards({ metrics, loading }: AdminKpiCardsProps) {
         </div>
       </div>
 
-      {/* 5. Volume Financeiro Capturado */}
-      <div className="p-5 rounded-2xl bg-gradient-to-br from-emerald-950/30 via-gray-900/80 to-gray-950 border border-emerald-500/20 shadow-xl relative overflow-hidden group hover:border-emerald-500/40 transition-all">
+      {/* 5. Prévia Média de Deslocamento */}
+      <div className="p-5 rounded-2xl bg-gradient-to-br from-amber-950/30 via-gray-900/80 to-gray-950 border border-amber-500/20 shadow-xl relative overflow-hidden group hover:border-amber-500/40 transition-all">
         <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wider">
-            Volume Estimado
+          <span className="text-xs font-semibold text-amber-300 uppercase tracking-wider">
+            Prévia Média (Chegada)
           </span>
-          <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-400 group-hover:scale-110 transition-transform">
-            <TrendingUp className="w-5 h-5" />
+          <div className="p-2 rounded-xl bg-amber-500/10 text-amber-400 group-hover:scale-110 transition-transform">
+            <Clock className="w-5 h-5" />
           </div>
         </div>
         <div className="mt-3">
-          <div className="text-2xl font-extrabold text-emerald-300 tracking-tight">
-            {formatCurrency(metrics.totalValueEstimate)}
+          <div className="text-3xl font-extrabold text-amber-300 tracking-tight flex items-baseline gap-1">
+            {metrics.avgPreviaMinutes || 0}
+            <span className="text-sm font-normal text-gray-400">min</span>
           </div>
           <p className="text-xs text-gray-400 mt-1">
-            Soma dos valores prévia dos chamados
+            Distância média: <span className="text-amber-300 font-semibold">{metrics.avgDistanceKm || 0} km</span>
           </p>
         </div>
       </div>

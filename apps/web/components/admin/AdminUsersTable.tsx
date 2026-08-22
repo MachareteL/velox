@@ -15,9 +15,14 @@ import {
   AlertCircle,
   Clock,
   ExternalLink,
+  UserPlus,
+  Trash2,
 } from 'lucide-react';
 import { AdminUserListItem } from '@/lib/admin/types';
+import { useAuth } from '@/lib/auth-context';
 import { SendPushModal } from './SendPushModal';
+import { CreateUserModal } from './CreateUserModal';
+import { DeleteConfirmModal } from './DeleteConfirmModal';
 
 interface AdminUsersTableProps {
   users: AdminUserListItem[];
@@ -26,9 +31,13 @@ interface AdminUsersTableProps {
 }
 
 export function AdminUsersTable({ users, loading, onRefresh }: AdminUsersTableProps) {
+  const { session } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [selectedUserForPush, setSelectedUserForPush] = useState<AdminUserListItem | null>(null);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [userToDelete, setUserToDelete] = useState<AdminUserListItem | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
 
   const filteredUsers = users.filter((u) => {
     const matchesQuery =
@@ -39,6 +48,32 @@ export function AdminUsersTable({ users, loading, onRefresh }: AdminUsersTablePr
 
     return matchesQuery && matchesStatus;
   });
+
+  const handleDeleteUser = async () => {
+    if (!userToDelete || !session) return;
+    setDeleteLoading(true);
+    try {
+      const res = await fetch(`/api/admin/users/${userToDelete.id}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao excluir usuário.');
+      }
+
+      setUserToDelete(null);
+      if (onRefresh) onRefresh();
+    } catch (err: any) {
+      console.error('[AdminUsersTable] Erro ao excluir:', err);
+      alert(`⚠️ ${err.message || 'Falha ao excluir usuário.'}`);
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
 
   const getStatusBadge = (status: string, isActive: boolean) => {
     switch (status) {
@@ -91,8 +126,8 @@ export function AdminUsersTable({ users, loading, onRefresh }: AdminUsersTablePr
 
   return (
     <div className="bg-gray-900/70 border border-gray-800 rounded-3xl overflow-hidden shadow-2xl mb-8">
-      {/* Header com Busca e Filtros */}
-      <div className="p-5 border-b border-gray-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 bg-gradient-to-r from-gray-900 via-gray-900/90 to-gray-950">
+      {/* Header com Busca, Filtros e Botão Novo Usuário */}
+      <div className="p-5 border-b border-gray-800 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 bg-gradient-to-r from-gray-900 via-gray-900/90 to-gray-950">
         <div>
           <h2 className="text-base font-bold text-white flex items-center gap-2">
             <UserCheck className="w-5 h-5 text-purple-400" />
@@ -102,13 +137,21 @@ export function AdminUsersTable({ users, loading, onRefresh }: AdminUsersTablePr
             </span>
           </h2>
           <p className="text-xs text-gray-400 mt-0.5">
-            Visualize o status de conexão WhatsApp e atividade de cada prestador
+            Visualize o status de conexão WhatsApp e gerencie o acesso de cada prestador
           </p>
         </div>
 
-        {/* Input de Busca e Dropdown de Filtro */}
-        <div className="flex flex-col sm:flex-row items-center gap-3 w-full md:w-auto">
-          <div className="relative w-full sm:w-64">
+        {/* Controles de Ação, Busca e Dropdown de Filtro */}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto">
+          <button
+            onClick={() => setIsCreateModalOpen(true)}
+            className="px-3.5 py-2 text-xs font-bold rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white shadow-lg shadow-purple-600/20 transition-all flex items-center justify-center gap-1.5 shrink-0 active:scale-95"
+          >
+            <UserPlus className="w-3.5 h-3.5" />
+            <span>Novo Prestador</span>
+          </button>
+
+          <div className="relative w-full sm:w-56">
             <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
@@ -234,14 +277,14 @@ export function AdminUsersTable({ users, loading, onRefresh }: AdminUsersTablePr
 
                   {/* Ações */}
                   <td className="py-3.5 px-4 text-right">
-                    <div className="flex items-center justify-end gap-2">
+                    <div className="flex items-center justify-end gap-1.5">
                       <button
                         onClick={() => setSelectedUserForPush(u)}
                         title="Enviar notificação push de teste"
                         className="px-2.5 py-1.5 rounded-lg bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[11px] font-semibold transition-all flex items-center gap-1"
                       >
                         <Send className="w-3 h-3 text-purple-400" />
-                        <span className="hidden lg:inline">Testar Push</span>
+                        <span className="hidden xl:inline">Testar Push</span>
                       </button>
 
                       <Link
@@ -251,6 +294,14 @@ export function AdminUsersTable({ users, loading, onRefresh }: AdminUsersTablePr
                         <Eye className="w-3 h-3 text-emerald-400" />
                         <span>Detalhes</span>
                       </Link>
+
+                      <button
+                        onClick={() => setUserToDelete(u)}
+                        title="Excluir prestador permanentemente"
+                        className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 border border-rose-500/30 text-[11px] font-semibold transition-all flex items-center justify-center"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -259,6 +310,27 @@ export function AdminUsersTable({ users, loading, onRefresh }: AdminUsersTablePr
           </tbody>
         </table>
       </div>
+
+      {/* Modal de Cadastro de Novo Usuário */}
+      <CreateUserModal
+        isOpen={isCreateModalOpen}
+        onClose={() => setIsCreateModalOpen(false)}
+        onUserCreated={() => {
+          if (onRefresh) onRefresh();
+        }}
+      />
+
+      {/* Modal de Confirmação de Exclusão de Usuário */}
+      <DeleteConfirmModal
+        isOpen={!!userToDelete}
+        onClose={() => setUserToDelete(null)}
+        onConfirm={handleDeleteUser}
+        title="Excluir Prestador"
+        description="Tem certeza que deseja excluir permanentemente este prestador? Todos os chamados capturados, logs, veículos, sessões do WhatsApp e o login de acesso associados serão removidos do sistema."
+        itemName={userToDelete ? `${userToDelete.name} (${userToDelete.email})` : undefined}
+        confirmButtonText="Excluir Permanentemente"
+        loading={deleteLoading}
+      />
 
       {/* Modal de Teste de Push */}
       {selectedUserForPush && (
@@ -276,3 +348,4 @@ export function AdminUsersTable({ users, loading, onRefresh }: AdminUsersTablePr
     </div>
   );
 }
+

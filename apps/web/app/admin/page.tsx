@@ -7,6 +7,7 @@ import { useAuth } from '@/lib/auth-context';
 import { AdminOverviewMetrics, AdminUserListItem } from '@/lib/admin/types';
 import { AdminKpiCards } from '@/components/admin/AdminKpiCards';
 import { AdminUsersTable } from '@/components/admin/AdminUsersTable';
+import { AdminRecordsViewer } from '@/components/admin/AdminRecordsViewer';
 
 export default function AdminDashboardPage() {
   const { session } = useAuth();
@@ -118,6 +119,9 @@ export default function AdminDashboardPage() {
 
       {/* Tabela de Gestão de Usuários */}
       <AdminUsersTable users={users} loading={loading} onRefresh={fetchData} />
+
+      {/* Gestão Global de Registros de Chamados & Logs */}
+      <AdminRecordsViewer />
     </div>
   );
 }

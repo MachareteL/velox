@@ -15,7 +15,8 @@ export interface AdminOverviewMetrics {
   failedCalls: number;
   successRatePercentage: number;
   avgDurationMs: number;
-  totalValueEstimate: number;
+  avgPreviaMinutes: number;
+  avgDistanceKm: number;
 
   totalPushSubscriptions: number;
   usersWithPushCount: number;
@@ -67,8 +68,27 @@ export interface AdminUserDetail {
     successfulCalls: number;
     failedCalls: number;
     successRatePercentage: number;
-    totalValueEstimate: number;
+    avgPreviaMinutes: number;
+    avgDistanceKm: number;
   };
+}
+
+export interface CreateUserPayload {
+  name: string;
+  email: string;
+  password: string;
+  phoneNumber?: string;
+}
+
+export interface CreateUserResponse {
+  success: boolean;
+  user?: {
+    id: string;
+    name: string;
+    email: string;
+    created_at: string;
+  };
+  error?: string;
 }
 
 export interface SendTestPushPayload {

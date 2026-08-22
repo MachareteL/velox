@@ -131,3 +131,129 @@ export async function GET(req: NextRequest) {
     );
   }
 }
+
+export async function POST(req: NextRequest) {
+  try {
+    const authResult = await requireAdmin(req);
+    if (!authResult.isAdmin || authResult.errorResponse) {
+      return authResult.errorResponse;
+    }
+
+    const body = await req.json();
+    const { name, email, password, phoneNumber } = body;
+
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return NextResponse.json(
+        { error: 'Nome do prestador/empresa é obrigatório.' },
+        { status: 400 }
+      );
+    }
+
+    if (!email || typeof email !== 'string' || !email.includes('@')) {
+      return NextResponse.json(
+        { error: 'E-mail corporativo válido é obrigatório.' },
+        { status: 400 }
+      );
+    }
+
+    if (!password || typeof password !== 'string' || password.length < 6) {
+      return NextResponse.json(
+        { error: 'A senha de acesso deve ter no mínimo 6 caracteres.' },
+        { status: 400 }
+      );
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanName = name.trim();
+    const cleanPhone = phoneNumber ? phoneNumber.replace(/\D/g, '') : null;
+
+    const supabase = createAdminSupabaseClient();
+
+    // 1. Cria usuário no Supabase Auth com email confirmado imediatamente
+    const { data: authData, error: authErr } = await supabase.auth.admin.createUser({
+      email: cleanEmail,
+      password: password,
+      email_confirm: true,
+      user_metadata: {
+        name: cleanName,
+      },
+    });
+
+    if (authErr || !authData?.user) {
+      console.error('[API /api/admin/users POST] Erro ao criar usuário no Supabase Auth:', authErr);
+      return NextResponse.json(
+        { error: authErr?.message || 'Falha ao criar usuário no provedor de autenticação.' },
+        { status: 400 }
+      );
+    }
+
+    const createdUser = authData.user;
+
+    // 2. Garante persistência na tabela tenants
+    const { data: tenantData, error: tenantErr } = await supabase
+      .from('tenants')
+      .upsert(
+        {
+          id: createdUser.id,
+          name: cleanName,
+          email: cleanEmail,
+          created_at: new Date().toISOString(),
+        },
+        { onConflict: 'id' }
+      )
+      .select('*')
+      .single();
+
+    if (tenantErr) {
+      console.error('[API /api/admin/users POST] Erro ao inserir na tabela tenants:', tenantErr);
+    }
+
+    // 3. Garante inicialização da sessão de WhatsApp
+    const { error: sessionErr } = await supabase
+      .from('whatsapp_sessions')
+      .upsert(
+        {
+          tenant_id: createdUser.id,
+          status: 'DISCONNECTED',
+          is_active: true,
+          phone_number: cleanPhone,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'tenant_id' }
+      );
+
+    if (sessionErr) {
+      console.error('[API /api/admin/users POST] Erro ao inicializar sessão WhatsApp:', sessionErr);
+    }
+
+    // 4. Registra log de auditoria
+    await supabase.from('system_logs').insert({
+      tenant_id: createdUser.id,
+      level: 'INFO',
+      event_type: 'ADMIN_USER_CREATED',
+      message: `Novo prestador cadastrado manualmente pelo administrador: ${cleanName} (${cleanEmail})`,
+      details: {
+        adminId: authResult.user?.id,
+        createdTenantId: createdUser.id,
+        email: cleanEmail,
+        phoneNumber: cleanPhone,
+      },
+    });
+
+    return NextResponse.json({
+      success: true,
+      user: {
+        id: createdUser.id,
+        name: cleanName,
+        email: cleanEmail,
+        created_at: tenantData?.created_at || createdUser.created_at,
+      },
+    });
+  } catch (err: any) {
+    console.error('[API /api/admin/users POST] Erro crítico:', err);
+    return NextResponse.json(
+      { error: err?.message || 'Erro interno ao cadastrar novo usuário.' },
+      { status: 500 }
+    );
+  }
+}
